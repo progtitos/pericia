@@ -1,4 +1,5 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
+import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import type { Database } from "@/lib/supabase/types";
 
@@ -45,7 +46,6 @@ export async function createClient() {
  * Sempre filtrar manualmente por org_id/case_id ao usar este client.
  */
 export function createServiceRoleClient() {
-  const { createClient: createSupabaseClient } = require("@supabase/supabase-js");
   return createSupabaseClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
