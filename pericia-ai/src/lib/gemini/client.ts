@@ -1,8 +1,8 @@
 import { GoogleGenAI } from "@google/genai";
 
 export const MODELS = {
-  PRO: "gemini-3.6-flash",
-  FLASH: "gemini-3.6-flash",
+  PRO: "gemini-3.5-flash",
+  FLASH: "gemini-3.5-flash",
 };
 
 let clientInstance: GoogleGenAI | null = null;
