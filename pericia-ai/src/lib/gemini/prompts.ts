@@ -1,4 +1,4 @@
-import { Type, type Schema } from "@google/genai";
+import { Type } from "@google/genai";
 
 /**
  * Todos os prompts abaixo seguem 3 regras fixas para reduzir alucinação:
@@ -38,7 +38,43 @@ Regras obrigatórias:
   no documento de origem nesta fase de triagem.
 `.trim();
 
-export const TRIAGEM_RESPONSE_SCHEMA: Schema = {
+/**
+ * Prompt usado no modo de Análise por Camadas (chunking) para processos
+ * extensos. Diferente da triagem normal (que envia o PDF binário/multimodal),
+ * aqui a entrada é a CAMADA DE TEXTO já extraída de um BLOCO do documento
+ * (uma fatia de páginas), o que reduz drasticamente o consumo de tokens.
+ *
+ * Reforça duas regras extras específicas do modo em camadas:
+ *  - O modelo está vendo apenas uma fatia do processo, não o documento
+ *    inteiro — não deve tratar a ausência de um dado neste bloco como prova
+ *    de que ele não existe no processo (outro bloco pode contê-lo).
+ *  - A consolidação entre blocos é feita depois por código determinístico,
+ *    então o modelo não precisa (e não deve tentar) "adivinhar" dados de
+ *    outros blocos.
+ */
+export function buildTriagemBlocoPrompt(
+  textoBloco: string,
+  blocoIndex: number,
+  totalBlocos: number
+): string {
+  return `
+Este processo judicial é extenso e foi dividido em ${totalBlocos} blocos para processamento.
+Você está analisando APENAS o BLOCO ${blocoIndex} de ${totalBlocos} (um trecho do processo,
+não o documento inteiro).
+
+Extraia os dados estruturados presentes NESTE BLOCO conforme as instruções do sistema.
+Se um campo não aparecer neste trecho específico, retorne null para ele — isso é esperado
+e normal, pois o dado pode estar em outro bloco (a consolidação final é feita
+automaticamente por outro processo, você não precisa se preocupar com isso).
+
+TEXTO DO BLOCO ${blocoIndex}/${totalBlocos}:
+"""
+${textoBloco}
+"""
+`.trim();
+}
+
+export const TRIAGEM_RESPONSE_SCHEMA = {
   type: Type.OBJECT,
   properties: {
     numero_processo: { type: Type.STRING, nullable: true },
@@ -78,7 +114,7 @@ export const TRIAGEM_RESPONSE_SCHEMA: Schema = {
     "quesitos",
     "observacoes_para_conferencia_humana",
   ],
-};
+} as const;
 
 export const SYSTEM_INSTRUCTION_EXTRATO = `
 Você é um assistente de OCR financeiro especializado em extratos bancários.
@@ -91,11 +127,11 @@ Regras obrigatórias:
 - Preencha "alertas" sempre que meses/páginas estiverem faltando, houver lançamento
   ilegível, ou sinais de edição/rasura no documento.
 - NÃO ajuste valores para "fechar a conta" — extraia exatamente o que está escrito,
-  mesmo que a soma não bate. A validação de consistência é feita depois, por código
+  mesmo que a soma não bata. A validação de consistência é feita depois, por código
   determinístico, não por você.
 `.trim();
 
-export const EXTRATO_RESPONSE_SCHEMA: Schema = {
+export const EXTRATO_RESPONSE_SCHEMA = {
   type: Type.OBJECT,
   properties: {
     saldo_inicial: { type: Type.NUMBER, nullable: true },
@@ -118,7 +154,7 @@ export const EXTRATO_RESPONSE_SCHEMA: Schema = {
     alertas: { type: Type.ARRAY, items: { type: Type.STRING } },
   },
   required: ["lancamentos", "alertas"],
-};
+} as const;
 
 /**
  * Prompt de geração da minuta do laudo. Diferente dos anteriores, aqui a IA

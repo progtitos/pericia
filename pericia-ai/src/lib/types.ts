@@ -27,6 +27,38 @@ export interface ProcessoTriagemExtraido {
     reu: string[];
   };
   observacoes_para_conferencia_humana: string[]; // pontos de baixa confiança do OCR/LLM
+  /** Presente apenas quando o processo excedeu o limite seguro e foi processado
+   *  em camadas (chunking). Ausente/undefined em extrações de documento único. */
+  _chunking_info?: ChunkingInfo;
+}
+
+/** Status de capacidade da janela de contexto, usado na prévia de upload. */
+export type TokenWindowStatus = "ok" | "atencao" | "critico";
+
+/** Estimativa de consumo de tokens de um arquivo antes do envio à IA. */
+export interface TokenPreviewInfo {
+  totalTokens: number;
+  modelLimit: number;
+  percentualOcupado: number; // 0 a 100
+  status: TokenWindowStatus;
+  exigeChunking: boolean; // true quando ultrapassa o limite seguro configurado
+  totalPaginas?: number;
+}
+
+/** Um bloco/camada de um documento dividido por estratégia de chunking. */
+export interface ChunkingBlockInfo {
+  indice: number; // 1-based
+  rotulo: string; // ex: "Petição Inicial / Cálculos", "Sentença / Decisão"
+  paginaInicial: number;
+  paginaFinal: number;
+  tokensEstimados: number;
+}
+
+/** Metadados de como um documento extenso foi dividido e processado. */
+export interface ChunkingInfo {
+  chunked: true;
+  totalBlocos: number;
+  blocos: ChunkingBlockInfo[];
 }
 
 /** Uma linha normalizada de extrato bancário extraída via OCR multimodal. */

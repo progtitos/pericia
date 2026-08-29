@@ -7,9 +7,15 @@ import type {
   ProcessoTriagemExtraido,
   ReconciliacaoResultado,
   ResultadoCalculoPrevidenciario,
+  TokenPreviewInfo,
 } from "@/lib/types";
 
 const FASES = ["Triagem", "Extratos", "Cálculo", "Laudo"] as const;
+
+interface ToastState {
+  message: string;
+  tone: "erro" | "info";
+}
 
 export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: string }) {
   const [faseAtiva, setFaseAtiva] = useState<(typeof FASES)[number]>("Triagem");
@@ -17,6 +23,7 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
   const [triagem, setTriagem] = useState<ProcessoTriagemExtraido | null>(null);
   const [triagemLoading, setTriagemLoading] = useState(false);
   const [triagemErro, setTriagemErro] = useState<string | null>(null);
+  const [triagemTokenPreview, setTriagemTokenPreview] = useState<TokenPreviewInfo | null>(null);
 
   const [reconciliacao, setReconciliacao] = useState<ReconciliacaoResultado | null>(null);
   const [extratoLoading, setExtratoLoading] = useState(false);
@@ -29,6 +36,13 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
   const [laudoMarkdown, setLaudoMarkdown] = useState<string | null>(null);
   const [laudoLoading, setLaudoLoading] = useState(false);
 
+  const [toast, setToast] = useState<ToastState | null>(null);
+
+  function showToast(message: string, tone: ToastState["tone"] = "erro") {
+    setToast({ message, tone });
+    setTimeout(() => setToast(null), 7000);
+  }
+
   // Parâmetros mínimos do cálculo previdenciário (viriam pré-preenchidos da triagem).
   const [params, setParams] = useState({
     rmi: "",
@@ -38,7 +52,8 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
     indice_ate_112021: "IPCA-E" as "IPCA-E" | "INPC",
   });
 
-  async function handleProcessoUploaded(documentId: string) {
+  async function handleProcessoUploaded(documentId: string, tokenPreview?: TokenPreviewInfo) {
+    setTriagemTokenPreview(tokenPreview ?? null);
     setTriagemLoading(true);
     setTriagemErro(null);
     try {
@@ -48,7 +63,15 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
         body: JSON.stringify({ documentId, caseId }),
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error);
+      if (!res.ok) {
+        // Erro de excedimento de tokens: mostra como Toast estilizado em vez
+        // de mensagem inline, conforme o tratamento elegante de erro pedido.
+        if (json.code === "TOKEN_LIMIT_EXCEEDED") {
+          showToast(json.error, "erro");
+          return;
+        }
+        throw new Error(json.error);
+      }
       setTriagem(json.data);
       setParams((p) => ({
         ...p,
@@ -76,7 +99,7 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
       setReconciliacao(json.reconciliacao);
     } catch (err: any) {
       setReconciliacao(null);
-      alert(err.message);
+      showToast(err.message);
     } finally {
       setExtratoLoading(false);
     }
@@ -124,7 +147,7 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
       if (!res.ok) throw new Error(json.error);
       setLaudoMarkdown(json.draft.content_markdown);
     } catch (err: any) {
-      alert(err.message);
+      showToast(err.message);
     } finally {
       setLaudoLoading(false);
     }
@@ -156,9 +179,16 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
               fileType="processo_pdf"
               label="Enviar PDF do processo (petição, sentença, acórdão)"
               accept="application/pdf"
+              showTokenPreview
               onUploaded={handleProcessoUploaded}
             />
-            {triagemLoading && <p className="text-sm text-ink-500">Analisando processo com IA…</p>}
+            {triagemLoading && (
+              <p className="text-sm text-ink-500">
+                {triagemTokenPreview?.exigeChunking
+                  ? "Processando em modo de Análise por Camadas — isso pode levar alguns minutos para documentos extensos…"
+                  : "Analisando processo com IA…"}
+              </p>
+            )}
             {triagemErro && <p className="text-sm text-seal-red">{triagemErro}</p>}
             {triagem && (
               <div className="rounded border border-ink-100 bg-white p-5">
@@ -173,6 +203,37 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
                   <Field label="RMI" value={triagem.rmi?.toString() ?? null} mono />
                   <Field label="Índice determinado" value={triagem.indice_determinado_pelo_juiz} />
                 </dl>
+
+                {triagem._chunking_info && (
+                  <div className="mt-4 rounded border border-brass/30 bg-brass/5 p-3">
+                    <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-brass-dark">
+                      <span className="selo-pericial !border-brass !text-brass !w-6 !h-6 !text-[8px]">
+                        {triagem._chunking_info.totalBlocos}
+                      </span>
+                      Processado em {triagem._chunking_info.totalBlocos} camadas
+                    </p>
+                    <table className="mt-3 w-full text-xs">
+                      <thead>
+                        <tr className="text-left text-ink-500">
+                          <th className="pb-1 font-medium">Bloco</th>
+                          <th className="pb-1 font-medium">Páginas</th>
+                          <th className="pb-1 font-medium text-right">Tokens (est.)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="tabular-figures">
+                        {triagem._chunking_info.blocos.map((b) => (
+                          <tr key={b.indice} className="linha-ledger">
+                            <td className="py-1 font-body">{b.rotulo}</td>
+                            <td className="py-1">
+                              {b.paginaInicial}–{b.paginaFinal}
+                            </td>
+                            <td className="py-1 text-right">{b.tokensEstimados.toLocaleString("pt-BR")}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
 
                 {triagem.observacoes_para_conferencia_humana?.length > 0 && (
                   <div className="mt-4 rounded border border-seal-red/30 bg-seal-red/5 p-3">
@@ -328,6 +389,42 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
             )}
           </div>
         )}
+      </div>
+
+      {toast && <Toast message={toast.message} tone={toast.tone} onClose={() => setToast(null)} />}
+    </div>
+  );
+}
+
+function Toast({
+  message,
+  tone,
+  onClose,
+}: {
+  message: string;
+  tone: "erro" | "info";
+  onClose: () => void;
+}) {
+  const styles =
+    tone === "erro"
+      ? "border-seal-red/30 bg-white text-ink"
+      : "border-ink-100 bg-white text-ink";
+  const iconStyle = tone === "erro" ? "selo-pericial--alerta" : "selo-pericial--conferido";
+
+  return (
+    <div className="fixed bottom-6 right-6 z-50 max-w-sm">
+      <div className={`flex items-start gap-3 rounded border shadow-lg p-4 ${styles}`}>
+        <span className={`selo-pericial ${iconStyle} !w-8 !h-8 !text-[9px] shrink-0`}>
+          {tone === "erro" ? "!" : "OK"}
+        </span>
+        <p className="text-sm">{message}</p>
+        <button
+          onClick={onClose}
+          className="ml-auto shrink-0 text-ink-300 hover:text-ink-700"
+          aria-label="Fechar"
+        >
+          ×
+        </button>
       </div>
     </div>
   );
