@@ -1,4 +1,4 @@
-import { Type } from "@google/genai";
+import { Type, type Schema } from "@google/genai";
 
 /**
  * Todos os prompts abaixo seguem 3 regras fixas para reduzir alucinação:
@@ -38,7 +38,7 @@ Regras obrigatórias:
   no documento de origem nesta fase de triagem.
 `.trim();
 
-export const TRIAGEM_RESPONSE_SCHEMA = {
+export const TRIAGEM_RESPONSE_SCHEMA: Schema = {
   type: Type.OBJECT,
   properties: {
     numero_processo: { type: Type.STRING, nullable: true },
@@ -78,7 +78,7 @@ export const TRIAGEM_RESPONSE_SCHEMA = {
     "quesitos",
     "observacoes_para_conferencia_humana",
   ],
-} as const;
+};
 
 export const SYSTEM_INSTRUCTION_EXTRATO = `
 Você é um assistente de OCR financeiro especializado em extratos bancários.
@@ -91,11 +91,11 @@ Regras obrigatórias:
 - Preencha "alertas" sempre que meses/páginas estiverem faltando, houver lançamento
   ilegível, ou sinais de edição/rasura no documento.
 - NÃO ajuste valores para "fechar a conta" — extraia exatamente o que está escrito,
-  mesmo que a soma não bata. A validação de consistência é feita depois, por código
+  mesmo que a soma não bate. A validação de consistência é feita depois, por código
   determinístico, não por você.
 `.trim();
 
-export const EXTRATO_RESPONSE_SCHEMA = {
+export const EXTRATO_RESPONSE_SCHEMA: Schema = {
   type: Type.OBJECT,
   properties: {
     saldo_inicial: { type: Type.NUMBER, nullable: true },
@@ -118,7 +118,7 @@ export const EXTRATO_RESPONSE_SCHEMA = {
     alertas: { type: Type.ARRAY, items: { type: Type.STRING } },
   },
   required: ["lancamentos", "alertas"],
-} as const;
+};
 
 /**
  * Prompt de geração da minuta do laudo. Diferente dos anteriores, aqui a IA
