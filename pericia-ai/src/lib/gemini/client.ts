@@ -1,7 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 
 export const MODELS = {
-  PRO: "gemini-3.1-pro-preview",
+  PRO: "gemini-2.5-flash",
   FLASH: "gemini-2.5-flash",
 };
 
