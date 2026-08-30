@@ -11,16 +11,21 @@ export type OnProgressCallback = (
   totalPaginas: number
 ) => void;
 
+export interface PDFExtractionResult {
+  textoCompleto: string;
+  totalPaginas: number;
+}
+
 export async function extractTextFromPDF(
   file: File,
   onProgress?: OnProgressCallback
-): Promise<string> {
+): Promise<PDFExtractionResult> {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-  const totalPages = pdf.numPages;
+  const totalPaginas = pdf.numPages;
   let fullText = "";
 
-  for (let i = 1; i <= totalPages; i++) {
+  for (let i = 1; i <= totalPaginas; i++) {
     const page = await pdf.getPage(i);
     const textContent = await page.getTextContent();
     const pageText = textContent.items
@@ -29,12 +34,15 @@ export async function extractTextFromPDF(
     fullText += pageText + "\n";
 
     if (onProgress) {
-      const porcentagem = Math.round((i / totalPages) * 100);
-      onProgress(porcentagem, i, totalPages);
+      const porcentagem = Math.round((i / totalPaginas) * 100);
+      onProgress(porcentagem, i, totalPaginas);
     }
   }
 
-  return fullText;
+  return {
+    textoCompleto: fullText,
+    totalPaginas,
+  };
 }
 
 // Alias exportado para compatibilidade com os componentes do frontend
