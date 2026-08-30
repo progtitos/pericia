@@ -7,6 +7,9 @@ if (!apiKey) {
 
 const genAI = new GoogleGenerativeAI(apiKey);
 
+// 1. Constantes exportadas exigidas por outras rotas
+export const SEGUNDOS_ESTIMADOS_POR_BLOCO_FALLBACK = 4;
+
 export interface ProgressoProcessamento {
   progresso: number;
   mensagem: string;
@@ -46,15 +49,8 @@ export function montarProgresso({
   };
 }
 
-/**
- * Função utilitária para pausar a execução entre chamadas (Rate Limit do Free Tier).
- */
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/**
- * Divide um texto em blocos maiores de caracteres para garantir que 
- * processos longos terminem em poucas chamadas (< 60s de execução total).
- */
 function dividirTextoEmBlocos(texto: string, tamanhoMaximoCaracteres = 180000): string[] {
   if (texto.length <= tamanhoMaximoCaracteres) {
     return [texto];
@@ -66,7 +62,6 @@ function dividirTextoEmBlocos(texto: string, tamanhoMaximoCaracteres = 180000): 
   while (inicio < texto.length) {
     let fim = inicio + tamanhoMaximoCaracteres;
     if (fim < texto.length) {
-      // Tenta cortar na quebra de linha mais próxima para não cortar frases ao meio
       const ultimaQuebra = texto.lastIndexOf("\n", fim);
       if (ultimaQuebra > inicio + tamanhoMaximoCaracteres * 0.7) {
         fim = ultimaQuebra;
@@ -82,9 +77,6 @@ function dividirTextoEmBlocos(texto: string, tamanhoMaximoCaracteres = 180000): 
   return blocos;
 }
 
-/**
- * Extração de texto de PDFs utilizando a API do Gemini.
- */
 export async function processarExtracaoProcessoFreeTier(
   bufferPdf: Buffer,
   options?: {
@@ -93,11 +85,8 @@ export async function processarExtracaoProcessoFreeTier(
   }
 ): Promise<any> {
   const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-  // 1. Extração preliminar ou conversão do buffer em texto
   const textoCompleto = bufferPdf.toString("utf-8"); 
 
-  // 2. Divisão em blocos grandes (~180k caracteres/bloco para gerar no máximo 4 a 6 blocos)
   const blocos = dividirTextoEmBlocos(textoCompleto, 180000);
   const totalBlocos = blocos.length;
 
@@ -107,9 +96,7 @@ export async function processarExtracaoProcessoFreeTier(
     const blocoAtual = blocos[i];
     const blocosConcluidos = i;
     const blocosRestantes = totalBlocos - blocosConcluidos;
-    
-    // Estimativa de 4 segundos por bloco
-    const tempoEstimadoSegundos = blocosRestantes * 4;
+    const tempoEstimadoSegundos = blocosRestantes * SEGUNDOS_ESTIMADOS_POR_BLOCO_FALLBACK;
 
     if (options?.onProgress) {
       await options.onProgress(
@@ -152,7 +139,6 @@ export async function processarExtracaoProcessoFreeTier(
       console.warn(`[Gemini Extract] Falha ao fazer parse do JSON no bloco ${i + 1}:`, e);
     }
 
-    // Pausa reduzida de 3s entre blocos para manter o total de chamadas sob 45s
     if (i < totalBlocos - 1) {
       await delay(3000);
     }
@@ -170,4 +156,42 @@ export async function processarExtracaoProcessoFreeTier(
   };
 
   return resultadoAcumulado;
+}
+
+// 2. Função de extração de extrato bancário
+export async function extractExtratoBancario(bufferPdf: Buffer): Promise<any> {
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+  const texto = bufferPdf.toString("utf-8");
+
+  const prompt = `
+  Extraia as transações deste extrato bancário em formato JSON (lista de objetos com data, descricao, valor e tipo).
+  Texto:
+  ${texto}
+  `;
+
+  const result = await model.generateContent(prompt);
+  const response = await result.response;
+  const rawText = response.text();
+
+  try {
+    const jsonStr = rawText.replace(/```json|```/g, "").trim();
+    return JSON.parse(jsonStr);
+  } catch {
+    return { transacoes: [], raw: rawText };
+  }
+}
+
+// 3. Função para geração da minuta do laudo
+export async function generateLaudoMinuta(dadosProcesso: any, calculos: any): Promise<string> {
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+  const prompt = `
+  Elabore uma minuta de laudo pericial contábil/previdenciário com base nos dados do processo e nos cálculos fornecidos.
+  Dados do Processo: ${JSON.stringify(dadosProcesso)}
+  Cálculos: ${JSON.stringify(calculos)}
+  `;
+
+  const result = await model.generateContent(prompt);
+  const response = await result.response;
+  return response.text();
 }
