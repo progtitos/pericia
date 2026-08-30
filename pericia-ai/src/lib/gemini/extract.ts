@@ -33,7 +33,36 @@ function cleanJsonResponse(rawText: string): string {
 }
 
 /**
- * 1. Extração do Processo para Triagem (utilizando gemini-3.6-flash)
+ * Executa requisição à API com mecanismo de retentativa para evitar erro 429 (Rate Limit / Cota).
+ */
+async function generateContentWithRetry(
+  ai: any,
+  payload: any,
+  maxRetries = 3
+): Promise<any> {
+  let delay = 2000;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await ai.models.generateContent(payload);
+    } catch (err: any) {
+      const isRateLimit =
+        err?.status === 429 ||
+        err?.message?.includes("429") ||
+        err?.message?.includes("RESOURCE_EXHAUSTED");
+
+      if (isRateLimit && attempt < maxRetries) {
+        console.warn(`[Gemini API] Cota atingida (429). Tentativa ${attempt} de ${maxRetries}. Aguardando ${delay}ms...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        delay *= 2; // Exponential backoff
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
+/**
+ * 1. Extração do Processo para Triagem
  */
 export async function extractProcessoTriagem(
   pdfBuffer: Buffer
@@ -44,7 +73,7 @@ export async function extractProcessoTriagem(
   try {
     const base64Pdf = pdfBuffer.toString("base64");
 
-    const response = await (ai as any).models.generateContent({
+    const response = await generateContentWithRetry(ai as any, {
       model: modelName,
       contents: [
         {
@@ -53,7 +82,7 @@ export async function extractProcessoTriagem(
             mimeType: "application/pdf",
           },
         },
-        `Você é um perito judicial especialista. Analise o texto do processo fornecido e extraia um JSON estrito com os dados numéricos e jurídicos essenciais para o recálculo.
+        `Você é um perito judicial especialista. Analise o texto do processo fornecido (focando prioritariamente na petição inicial, sentença e acórdão) e extraia um JSON estrito com os dados numéricos e jurídicos essenciais para o recálculo.
         Retorne APENAS um objeto JSON válido no formato:
         {
           "numero_processo": "string",
@@ -83,9 +112,10 @@ export async function extractProcessoTriagem(
   } catch (error: any) {
     console.error("Erro no extractProcessoTriagem:", error);
 
+    // Tentativa de emergência simplificada caso o payload original estoure a cota de tokens
     try {
       const base64Pdf = pdfBuffer.toString("base64");
-      const fallbackResponse = await (ai as any).models.generateContent({
+      const fallbackResponse = await generateContentWithRetry(ai as any, {
         model: "gemini-3.6-flash",
         contents: [
           {
@@ -94,7 +124,7 @@ export async function extractProcessoTriagem(
               mimeType: "application/pdf",
             },
           },
-          "Extraia um JSON com numero_processo, autor, réu, vara e observacoes_para_conferencia_humana do PDF.",
+          "Resuma apenas em JSON estrito: numero_processo, autor, réu, vara, e observacoes_para_conferencia_humana.",
         ],
       });
 
@@ -104,7 +134,7 @@ export async function extractProcessoTriagem(
       return JSON.parse(cleanedText) as ProcessoTriagemResult;
     } catch (fallbackError: any) {
       throw new Error(
-        `Falha ao extrair dados do processo: ${error?.message || error}`
+        `O limite de tokens/cota foi atingido na API do Google Gemini. Aguarde 1 minuto e tente novamente ou divida o PDF.`
       );
     }
   }
@@ -126,7 +156,7 @@ export async function extractExtratoBancario(
         ? fileInput
         : fileInput.toString("base64");
 
-    const response = await (ai as any).models.generateContent({
+    const response = await generateContentWithRetry(ai as any, {
       model: modelName,
       contents: [
         {
@@ -165,7 +195,7 @@ export async function generateLaudoMinuta(data: any): Promise<any> {
   const modelName = MODELS.PRO || "gemini-3.6-flash";
 
   try {
-    const response = await (ai as any).models.generateContent({
+    const response = await generateContentWithRetry(ai as any, {
       model: modelName,
       contents: [
         `Com base nos dados periciais fornecidos abaixo, elabore a minuta do laudo pericial em formato JSON estrito:
