@@ -54,7 +54,6 @@ export function montarProgresso({
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Função com retry automático em caso de erro 429 (Rate Limit)
 async function chamarGeminiComRetry(model: any, prompt: any, maxTentativas = 4) {
   for (let tentativa = 1; tentativa <= maxTentativas; tentativa++) {
     try {
@@ -62,7 +61,7 @@ async function chamarGeminiComRetry(model: any, prompt: any, maxTentativas = 4) 
     } catch (erro: any) {
       const eTexto = String(erro);
       if (eTexto.includes("429") && tentativa < maxTentativas) {
-        const tempoEspera = tentativa * 12000; // 12s na 1ª, 24s na 2ª, 36s na 3ª
+        const tempoEspera = tentativa * 12000;
         console.warn(`[Gemini 429] Limite temporário atingido. Retentativa ${tentativa}/${maxTentativas} em ${tempoEspera / 1000}s...`);
         await delay(tempoEspera);
       } else {
@@ -208,4 +207,32 @@ export async function extractExtratoBancario(
   const rawText = response.text();
 
   try {
-    const jsonStr = rawText.replace(/```json|
+    const jsonStr = rawText.replace(/```json|```/g, "").trim();
+    return JSON.parse(jsonStr);
+  } catch {
+    return { banco: "", conta: "", periodo: "", transacoes: [], raw: rawText };
+  }
+}
+
+export async function generateLaudoMinuta(
+  paramsOrDados: any,
+  calculos?: any
+): Promise<string> {
+  const model = getGeminiModel("gemini-2.5-flash");
+
+  let dadosPrompt = "";
+  if (calculos !== undefined) {
+    dadosPrompt = `Dados do Processo: ${JSON.stringify(paramsOrDados)}\nCálculos: ${JSON.stringify(calculos)}`;
+  } else {
+    dadosPrompt = `Parâmetros do Laudo: ${JSON.stringify(paramsOrDados)}`;
+  }
+
+  const prompt = `
+  Elabore uma minuta de laudo pericial contábil/previdenciário com base nas informações fornecidas.
+  ${dadosPrompt}
+  `;
+
+  const result = await chamarGeminiComRetry(model, prompt);
+  const response = await result.response;
+  return response.text();
+}
