@@ -5,10 +5,13 @@ import type { ProcessoTriagemExtraido } from "@/lib/types";
 export const SEGUNDOS_ESTIMADOS_POR_BLOCO_FALLBACK = 20;
 
 export interface ProgressoProcessamento {
-  progresso: number;
-  mensagem: string;
-  tempoRestanteSegundos: number;
-  status: "processing" | "done" | "error";
+  progresso?: number;
+  mensagem?: string;
+  tempoRestanteSegundos?: number;
+  status?: "processing" | "done" | "error";
+  total_blocos?: number;
+  blocos_concluidos?: number;
+  etapa?: string;
 }
 
 export async function processarTextoProcesso(
