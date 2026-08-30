@@ -17,7 +17,7 @@ export function getGeminiClient(): GoogleGenAI {
 }
 
 export const MODELS = {
-  // Modelos recomendados e atualizados
-  PRO: process.env.GEMINI_MODEL_PRO || "gemini-2.5-pro",
+  // Modelos recomendados e ativos pela API do Gemini
+  PRO: process.env.GEMINI_MODEL_PRO || "gemini-3.1-pro-preview",
   FLASH: process.env.GEMINI_MODEL_FLASH || "gemini-2.5-flash",
 } as const;
