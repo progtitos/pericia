@@ -17,8 +17,7 @@ export function getGeminiClient(): GoogleGenAI {
 }
 
 export const MODELS = {
-  // Pro: melhor para OCR de documentos longos/complexos e raciocínio jurídico.
-  PRO: process.env.GEMINI_MODEL_PRO || "gemini-1.5-pro",
-  // Flash: mais barato/rápido para tarefas menores (ex.: reclassificar poucas linhas).
-  FLASH: process.env.GEMINI_MODEL_FLASH || "gemini-1.5-flash",
+  // Modelos recomendados e atualizados
+  PRO: process.env.GEMINI_MODEL_PRO || "gemini-2.5-pro",
+  FLASH: process.env.GEMINI_MODEL_FLASH || "gemini-2.5-flash",
 } as const;
