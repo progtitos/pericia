@@ -1,3 +1,4 @@
+import pdfParse from "pdf-parse";
 import { getGeminiClient, MODELS } from "./client";
 
 export interface ProcessoTriagemResult {
@@ -39,7 +40,7 @@ async function generateWithBackoff(
   ai: any,
   payload: any,
   retries = 3,
-  delayMs = 3000
+  delayMs = 2000
 ): Promise<any> {
   try {
     return await ai.models.generateContent(payload);
@@ -52,7 +53,7 @@ async function generateWithBackoff(
 
     if (isRateLimit && retries > 0) {
       console.warn(
-        `[Gemini API] Cota/Rate limit excedido. Aguardando ${delayMs / 1000}s para tentar novamente...`
+        `[Gemini API] Cota excedida. Aguardando ${delayMs / 1000}s para tentar novamente...`
       );
       await new Promise((res) => setTimeout(res, delayMs));
       return generateWithBackoff(ai, payload, retries - 1, delayMs * 2);
@@ -62,7 +63,7 @@ async function generateWithBackoff(
 }
 
 /**
- * 1. Extração do Processo para Triagem
+ * 1. Extração do Processo para Triagem (Texto Puro)
  */
 export async function extractProcessoTriagem(
   pdfBuffer: Buffer
@@ -70,54 +71,79 @@ export async function extractProcessoTriagem(
   const ai = getGeminiClient();
   const modelName = MODELS.FLASH || "gemini-3.6-flash";
 
+  let extractedText = "";
+
   try {
-    const base64Pdf = pdfBuffer.toString("base64");
+    // 1. Extrai a camada de texto puro do PDF para reduzir drasticamente a quantidade de tokens
+    const parsedPdf = await pdfParse(pdfBuffer);
+    extractedText = parsedPdf.text || "";
+  } catch (pdfErr) {
+    console.warn("Falha ao extrair texto puro com pdf-parse, seguindo com o buffer:", pdfErr);
+  }
+
+  // Limita o texto puro aos primeiros 300.000 caracteres se o processo for gigantesco (preserva os principais dados iniciais)
+  if (extractedText.length > 300000) {
+    extractedText = extractedText.slice(0, 300000);
+  }
+
+  try {
+    // Monta o payload enviando Texto Puro se disponível, ou fallback para InlineData
+    const contentsPayload = extractedText.trim().length > 100
+      ? [
+          `Analise o texto abaixo extraído do processo judicial e responda exclusivamente em JSON estrito.\n\nTEXTO DO PROCESSO:\n${extractedText}`,
+          `Extraia um JSON com a estrutura:\n
+          {
+            "numero_processo": "string",
+            "autor": "string",
+            "réu": "string",
+            "vara": "string",
+            "tribunal": "string",
+            "especialidade": "string",
+            "objeto_principal": "string",
+            "pedidos_e_deferimentos": ["string"],
+            "datas_chave": {
+              "distribuição": "YYYY-MM-DD",
+              "citação": "YYYY-MM-DD",
+              "sentença": "YYYY-MM-DD",
+              "trânsito_em_julgado": "YYYY-MM-DD"
+            },
+            "valores_mencionados": [
+              { "tipo": "string", "valor": 0.0, "data_base": "YYYY-MM-DD" }
+            ],
+            "observacoes_para_conferencia_humana": "string"
+          }`
+        ]
+      : [
+          {
+            inlineData: {
+              data: pdfBuffer.toString("base64"),
+              mimeType: "application/pdf",
+            },
+          },
+          `Analise o processo e extraia os dados em formato JSON estrito conforme a estrutura padrão.`
+        ];
 
     const response = await generateWithBackoff(ai as any, {
       model: modelName,
-      contents: [
-        {
-          inlineData: {
-            data: base64Pdf,
-            mimeType: "application/pdf",
-          },
-        },
-        `Você é um perito judicial especialista. Analise o processo e extraia em JSON estrito:
-        {
-          "numero_processo": "string",
-          "autor": "string",
-          "réu": "string",
-          "vara": "string",
-          "tribunal": "string",
-          "especialidade": "string",
-          "objeto_principal": "string",
-          "pedidos_e_deferimentos": ["string"],
-          "datas_chave": {
-            "distribuição": "YYYY-MM-DD",
-            "citação": "YYYY-MM-DD",
-            "sentença": "YYYY-MM-DD",
-            "trânsito_em_julgado": "YYYY-MM-DD"
-          },
-          "valores_mencionados": [
-            { "tipo": "string", "valor": 0.0, "data_base": "YYYY-MM-DD" }
-          ],
-          "observacoes_para_conferencia_humana": "string"
-        }`,
-      ],
+      contents: contentsPayload,
     });
 
-    const cleanedText = cleanJsonResponse(response.text || response.response?.text() || "");
+    const cleanedText = cleanJsonResponse(
+      response.text || response.response?.text() || ""
+    );
     return JSON.parse(cleanedText) as ProcessoTriagemResult;
   } catch (error: any) {
     console.error("Erro em extractProcessoTriagem:", error);
 
     throw new Error(
-      "O limite de cota de processamento do Google Gemini foi excedido para este volume de dados (775 páginas). " +
-      "Por favor, vincule uma conta Billing no Google AI Studio ou envie um PDF contendo apenas as peças principais (Petição Inicial e Sentença)."
+      `Falha na extração de dados do processo: ${error?.message || error}`
     );
   }
 }
 
+/**
+ * 2. Extração de Extrato Bancário
+ */
 export async function extractExtratoBancario(
   fileInput: Buffer | string,
   mimeType: string = "application/pdf"
@@ -138,7 +164,7 @@ export async function extractExtratoBancario(
             mimeType: mimeType,
           },
         },
-        `Extraia as movimentações financeiras em formato JSON estrito:
+        `Extraia as movimentações financeiras do extrato bancário em formato JSON estrito:
         {
           "banco": "string",
           "conta": "string",
@@ -160,6 +186,9 @@ export async function extractExtratoBancario(
   }
 }
 
+/**
+ * 3. Geração de Minuta / Laudo Pericial
+ */
 export async function generateLaudoMinuta(data: any): Promise<any> {
   const ai = getGeminiClient();
   const modelName = MODELS.FLASH || "gemini-3.6-flash";
