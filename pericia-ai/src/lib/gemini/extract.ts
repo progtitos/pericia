@@ -33,7 +33,11 @@ export async function processarTextoProcesso(
     data_citacao: null,
     sistema_amortizacao: null,
     taxa_juros_contratada_am: null,
-    quesitos: [],
+    quesitos: {
+      autor: [],
+      juiz: [],
+      reu: [],
+    },
   };
 }
 
