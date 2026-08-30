@@ -9,7 +9,7 @@ function getGeminiModel(modelName = "gemini-3.6-flash") {
   return genAI.getGenerativeModel({ model: modelName });
 }
 
-export const SEGUNDOS_ESTIMADOS_POR_BLOCO_FALLBACK = 12;
+export const SEGUNDOS_ESTIMADOS_POR_BLOCO_FALLBACK = 15;
 
 export interface ProgressoProcessamento {
   progresso: number;
@@ -54,48 +54,21 @@ export function montarProgresso({
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function chamarGeminiComRetry(model: any, prompt: any, maxTentativas = 4) {
+async function chamarGeminiComRetry(model: any, promptParts: any[], maxTentativas = 3) {
   for (let tentativa = 1; tentativa <= maxTentativas; tentativa++) {
     try {
-      return await model.generateContent(prompt);
+      return await model.generateContent(promptParts);
     } catch (erro: any) {
       const eTexto = String(erro);
       if (eTexto.includes("429") && tentativa < maxTentativas) {
-        const tempoEspera = tentativa * 10000;
-        console.warn(`[Gemini 429] Cota atingida. Tentativa ${tentativa}/${maxTentativas} aguardando ${tempoEspera / 1000}s...`);
+        const tempoEspera = tentativa * 5000;
+        console.warn(`[Gemini 429] Requisitando retry ${tentativa}/${maxTentativas} após ${tempoEspera / 1000}s...`);
         await delay(tempoEspera);
       } else {
         throw erro;
       }
     }
   }
-}
-
-// Blocos maiores de 900k caracteres (aprox. 50-60 páginas por bloco)
-function dividirTextoEmBlocos(texto: string, tamanhoMaximoCaracteres = 900000): string[] {
-  if (texto.length <= tamanhoMaximoCaracteres) {
-    return [texto];
-  }
-
-  const blocos: string[] = [];
-  let inicio = 0;
-
-  while (inicio < texto.length) {
-    let fim = inicio + tamanhoMaximoCaracteres;
-    if (fim < texto.length) {
-      const ultimaQuebra = texto.lastIndexOf("\n", fim);
-      if (ultimaQuebra > inicio + tamanhoMaximoCaracteres * 0.7) {
-        fim = ultimaQuebra;
-      }
-    } else {
-      fim = texto.length;
-    }
-
-    blocos.push(texto.slice(inicio, fim));
-    inicio = fim;
-  }
-
-  return blocos;
 }
 
 export async function processarExtracaoProcessoFreeTier(
@@ -106,81 +79,75 @@ export async function processarExtracaoProcessoFreeTier(
   }
 ): Promise<any> {
   const model = getGeminiModel("gemini-3.6-flash");
-  const textoCompleto = bufferPdf.toString("utf-8");
 
-  // Ajustado para 900.000 caracteres por bloco
-  const blocos = dividirTextoEmBlocos(textoCompleto, 900000);
-  const totalBlocos = blocos.length;
-
-  let resultadoAcumulado: any = {};
-
-  for (let i = 0; i < totalBlocos; i++) {
-    const blocoAtual = blocos[i];
-    const blocosConcluidos = i;
-    const blocosRestantes = totalBlocos - blocosConcluidos;
-    const tempoEstimadoSegundos = blocosRestantes * SEGUNDOS_ESTIMADOS_POR_BLOCO_FALLBACK;
-
-    if (options?.onProgress) {
-      await options.onProgress(
-        montarProgresso({
-          status: "processing",
-          blocosConcluidos,
-          totalBlocos,
-          segundosRestantes: tempoEstimadoSegundos,
-          mensagem: `Processando bloco ${i + 1} de ${totalBlocos}...`,
-        })
-      );
-    }
-
-    const prompt = `
-    Analise o seguinte trecho de um processo judicial e extraia as informações estruturadas em formato JSON.
-    Campos necessários:
-    - numero_processo
-    - vara
-    - autor
-    - reu
-    - dib
-    - der
-    - rmi
-    - indice_determinado_pelo_juiz
-    - observacoes_para_conferencia_humana
-
-    Texto do bloco:
-    ${blocoAtual}
-    `;
-
-    const result = await chamarGeminiComRetry(model, prompt);
-    const response = await result.response;
-    const textResult = response.text();
-
-    try {
-      const jsonLimpo = textResult
-        .replaceAll("```json", "")
-        .replaceAll("```", "")
-        .trim();
-      const parsed = JSON.parse(jsonLimpo);
-      resultadoAcumulado = { ...resultadoAcumulado, ...parsed };
-    } catch (e) {
-      console.warn(`[Gemini Extract] Falha no parse do bloco ${i + 1}:`, e);
-    }
-
-    if (i < totalBlocos - 1) {
-      await delay(4000); // Intervalo reduzido para agilizar a fila
-    }
+  if (options?.onProgress) {
+    await options.onProgress(
+      montarProgresso({
+        status: "processing",
+        blocosConcluidos: 0,
+        totalBlocos: 1,
+        segundosRestantes: 20,
+        mensagem: "Analisando PDF completo com Gemini 3.6 Flash...",
+      })
+    );
   }
 
-  resultadoAcumulado._chunking_info = {
-    totalBlocos,
-    blocos: blocos.map((b, index) => ({
-      indice: index + 1,
-      rotulo: `Bloco ${index + 1}`,
-      paginaInicial: index * 60 + 1,
-      paginaFinal: Math.min((index + 1) * 60, 775),
-      tokensEstimados: Math.round(b.length / 4),
-    })),
+  const prompt = `
+  Analise o processo judicial anexado e extraia as informações estruturadas estritamente em formato JSON válido.
+  Campos necessários:
+  - numero_processo
+  - vara
+  - autor
+  - reu
+  - dib
+  - der
+  - rmi
+  - indice_determinado_pelo_juiz
+  - observacoes_para_conferencia_humana
+  `;
+
+  // Envia o PDF como arquivo binário nativo para a API
+  const base64Pdf = bufferPdf.toString("base64");
+
+  const result = await chamarGeminiComRetry(model, [
+    prompt,
+    {
+      inlineData: {
+        data: base64Pdf,
+        mimeType: "application/pdf",
+      },
+    },
+  ]);
+
+  const response = await result.response;
+  const textResult = response.text();
+
+  let parsedResult: any = {};
+  try {
+    const jsonLimpo = textResult
+      .replaceAll("```json", "")
+      .replaceAll("```", "")
+      .trim();
+    parsedResult = JSON.parse(jsonLimpo);
+  } catch (e) {
+    console.warn("[Gemini Extract] Falha ao parsear JSON:", e);
+    parsedResult = { rawText: textResult };
+  }
+
+  parsedResult._chunking_info = {
+    totalBlocos: 1,
+    blocos: [
+      {
+        indice: 1,
+        rotulo: "Arquivo Completo (Inline PDF)",
+        paginaInicial: 1,
+        paginaFinal: 775,
+        tokensEstimados: 500000,
+      },
+    ],
   };
 
-  return resultadoAcumulado;
+  return parsedResult;
 }
 
 export async function extractExtratoBancario(
@@ -240,7 +207,7 @@ export async function generateLaudoMinuta(
   ${dadosPrompt}
   `;
 
-  const result = await chamarGeminiComRetry(model, prompt);
+  const result = await chamarGeminiComRetry(model, [prompt]);
   const response = await result.response;
   return response.text();
 }
