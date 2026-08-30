@@ -30,6 +30,10 @@ export async function processarTextoProcesso(
     rmi: null,
     indice_determinado_pelo_juiz: null,
     observacoes_para_conferencia_humana: [],
+    data_citacao: null,
+    sistema_amortizacao: null,
+    taxa_juros_contratada_am: null,
+    quesitos: [],
   };
 }
 
