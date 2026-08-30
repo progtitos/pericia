@@ -61,8 +61,8 @@ async function chamarGeminiComRetry(model: any, prompt: any, maxTentativas = 4) 
     } catch (erro: any) {
       const eTexto = String(erro);
       if (eTexto.includes("429") && tentativa < maxTentativas) {
-        const tempoEspera = tentativa * 12000;
-        console.warn(`[Gemini 429] Limite de cota atingido. Retentativa ${tentativa}/${maxTentativas} em ${tempoEspera / 1000}s...`);
+        const tempoEspera = tentativa * 10000;
+        console.warn(`[Gemini 429] Cota atingida. Tentativa ${tentativa}/${maxTentativas} aguardando ${tempoEspera / 1000}s...`);
         await delay(tempoEspera);
       } else {
         throw erro;
@@ -71,7 +71,8 @@ async function chamarGeminiComRetry(model: any, prompt: any, maxTentativas = 4) 
   }
 }
 
-function dividirTextoEmBlocos(texto: string, tamanhoMaximoCaracteres = 80000): string[] {
+// Blocos maiores de 900k caracteres (aprox. 50-60 páginas por bloco)
+function dividirTextoEmBlocos(texto: string, tamanhoMaximoCaracteres = 900000): string[] {
   if (texto.length <= tamanhoMaximoCaracteres) {
     return [texto];
   }
@@ -107,7 +108,8 @@ export async function processarExtracaoProcessoFreeTier(
   const model = getGeminiModel("gemini-3.6-flash");
   const textoCompleto = bufferPdf.toString("utf-8");
 
-  const blocos = dividirTextoEmBlocos(textoCompleto, 80000);
+  // Ajustado para 900.000 caracteres por bloco
+  const blocos = dividirTextoEmBlocos(textoCompleto, 900000);
   const totalBlocos = blocos.length;
 
   let resultadoAcumulado: any = {};
@@ -159,11 +161,11 @@ export async function processarExtracaoProcessoFreeTier(
       const parsed = JSON.parse(jsonLimpo);
       resultadoAcumulado = { ...resultadoAcumulado, ...parsed };
     } catch (e) {
-      console.warn(`[Gemini Extract] Falha ao fazer parse do JSON no bloco ${i + 1}:`, e);
+      console.warn(`[Gemini Extract] Falha no parse do bloco ${i + 1}:`, e);
     }
 
     if (i < totalBlocos - 1) {
-      await delay(10000);
+      await delay(4000); // Intervalo reduzido para agilizar a fila
     }
   }
 
@@ -172,8 +174,8 @@ export async function processarExtracaoProcessoFreeTier(
     blocos: blocos.map((b, index) => ({
       indice: index + 1,
       rotulo: `Bloco ${index + 1}`,
-      paginaInicial: index * 50 + 1,
-      paginaFinal: Math.min((index + 1) * 50, 775),
+      paginaInicial: index * 60 + 1,
+      paginaFinal: Math.min((index + 1) * 60, 775),
       tokensEstimados: Math.round(b.length / 4),
     })),
   };
