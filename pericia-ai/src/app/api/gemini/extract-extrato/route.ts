@@ -15,6 +15,9 @@ interface LancamentoExtrato {
 interface ExtratoResult {
   banco?: string;
   conta?: string;
+  saldo_inicial?: number;
+  saldo_final?: number;
+  alertas?: string[];
   lancamentos: LancamentoExtrato[];
 }
 
@@ -63,13 +66,21 @@ export async function POST(req: NextRequest) {
     const mimeType = document.mime_type || "application/pdf";
     const fileBase64 = Buffer.from(await fileBlob.arrayBuffer()).toString("base64");
     
-    // Força a tipagem do resultado retornado pela IA
-    const extraido = (await extractExtratoBancario(fileBase64, mimeType)) as ExtratoResult;
+    // Força a tipagem do resultado retornado pela IA e garante fallbacks para os campos do cálculo
+    const rawData = await extractExtratoBancario(fileBase64, mimeType);
+    const extraido: ExtratoResult = {
+      banco: rawData?.banco || "",
+      conta: rawData?.conta || "",
+      saldo_inicial: rawData?.saldo_inicial ?? 0,
+      saldo_final: rawData?.saldo_final ?? 0,
+      alertas: rawData?.alertas || [],
+      lancamentos: rawData?.lancamentos || [],
+    };
 
     // Validação determinística de consistência
-    const reconciliacao = reconciliarExtrato(extraido);
+    const reconciliacao = reconciliarExtrato(extraido as any);
 
-    // Grava lançamentos normalizados, marcando os suspeitos (l e idx explicitamente tipados)
+    // Grava lançamentos normalizados, marcando os suspeitos
     const rows = (extraido.lancamentos || []).map((l: LancamentoExtrato, idx: number) => ({
       document_id: documentId,
       case_id: caseId,
