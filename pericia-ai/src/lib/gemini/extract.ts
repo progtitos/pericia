@@ -46,42 +46,46 @@ export async function extractProcessoTriagem(
 ): Promise<ProcessoTriagemResult> {
   const ai = getGeminiClient();
   const modelName = MODELS.PRO || "gemini-2.5-flash";
-  const model = ai.getGenerativeModel({ model: modelName });
 
   try {
     const base64Pdf = pdfBuffer.toString("base64");
-    const response = await model.generateContent([
-      {
-        inlineData: {
-          data: base64Pdf,
-          mimeType: "application/pdf",
+    
+    // Utiliza a sintaxe da nova SDK @google/genai
+    const response = await (ai as any).models.generateContent({
+      model: modelName,
+      contents: [
+        {
+          inlineData: {
+            data: base64Pdf,
+            mimeType: "application/pdf",
+          },
         },
-      },
-      `Você é um perito judicial especialista. Analise o texto do processo fornecido e extraia um JSON estrito com os dados numéricos e jurídicos essenciais para o recálculo.
-      Retorne APENAS um objeto JSON válido no formato:
-      {
-        "numero_processo": "string",
-        "autor": "string",
-        "réu": "string",
-        "vara": "string",
-        "tribunal": "string",
-        "especialidade": "string",
-        "objeto_principal": "string",
-        "pedidos_e_deferimentos": ["string"],
-        "datas_chave": {
-          "distribuição": "YYYY-MM-DD",
-          "citação": "YYYY-MM-DD",
-          "sentença": "YYYY-MM-DD",
-          "trânsito_em_julgado": "YYYY-MM-DD"
-        },
-        "valores_mencionados": [
-          { "tipo": "string", "valor": 0.0, "data_base": "YYYY-MM-DD" }
-        ],
-        "observacoes_para_conferencia_humana": "string"
-      }`,
-    ]);
+        `Você é um perito judicial especialista. Analise o texto do processo fornecido e extraia um JSON estrito com os dados numéricos e jurídicos essenciais para o recálculo.
+        Retorne APENAS um objeto JSON válido no formato:
+        {
+          "numero_processo": "string",
+          "autor": "string",
+          "réu": "string",
+          "vara": "string",
+          "tribunal": "string",
+          "especialidade": "string",
+          "objeto_principal": "string",
+          "pedidos_e_deferimentos": ["string"],
+          "datas_chave": {
+            "distribuição": "YYYY-MM-DD",
+            "citação": "YYYY-MM-DD",
+            "sentença": "YYYY-MM-DD",
+            "trânsito_em_julgado": "YYYY-MM-DD"
+          },
+          "valores_mencionados": [
+            { "tipo": "string", "valor": 0.0, "data_base": "YYYY-MM-DD" }
+          ],
+          "observacoes_para_conferencia_humana": "string"
+        }`,
+      ],
+    });
 
-    const cleanedText = cleanJsonResponse(response.response.text());
+    const cleanedText = cleanJsonResponse(response.text || response.response?.text() || "");
     return JSON.parse(cleanedText) as ProcessoTriagemResult;
   } catch (error: any) {
     console.error("Erro no extractProcessoTriagem:", error);
@@ -98,7 +102,6 @@ export async function extractExtratoBancario(
 ): Promise<any> {
   const ai = getGeminiClient();
   const modelName = MODELS.FLASH || "gemini-2.5-flash";
-  const model = ai.getGenerativeModel({ model: modelName });
 
   try {
     const base64Data =
@@ -106,24 +109,30 @@ export async function extractExtratoBancario(
         ? fileInput
         : fileInput.toString("base64");
 
-    const response = await model.generateContent([
-      {
-        inlineData: {
-          data: base64Data,
-          mimeType: mimeType,
+    const response = await (ai as any).models.generateContent({
+      model: modelName,
+      contents: [
+        {
+          inlineData: {
+            data: base64Data,
+            mimeType: mimeType,
+          },
         },
-      },
-      `Extraia as movimentações financeiras do extrato bancário em formato JSON estrito:
-      {
-        "banco": "string",
-        "conta": "string",
-        "lancamentos": [
-          { "data": "YYYY-MM-DD", "descricao": "string", "valor": 0.0, "tipo": "C ou D" }
-        ]
-      }`,
-    ]);
+        `Extraia as movimentações financeiras do extrato bancário em formato JSON estrito:
+        {
+          "banco": "string",
+          "conta": "string",
+          "saldo_inicial": 0.0,
+          "saldo_final": 0.0,
+          "alertas": ["string"],
+          "lancamentos": [
+            { "data": "YYYY-MM-DD", "descricao": "string", "valor": 0.0, "tipo": "C ou D" }
+          ]
+        }`,
+      ],
+    });
 
-    const cleanedText = cleanJsonResponse(response.response.text());
+    const cleanedText = cleanJsonResponse(response.text || response.response?.text() || "");
     return JSON.parse(cleanedText);
   } catch (error: any) {
     console.error("Erro no extractExtratoBancario:", error);
@@ -137,23 +146,25 @@ export async function extractExtratoBancario(
 export async function generateLaudoMinuta(data: any): Promise<any> {
   const ai = getGeminiClient();
   const modelName = MODELS.PRO || "gemini-2.5-flash";
-  const model = ai.getGenerativeModel({ model: modelName });
 
   try {
-    const response = await model.generateContent([
-      `Com base nos dados periciais fornecidos abaixo, elabore a minuta do laudo pericial em formato JSON estrito:
-      ${JSON.stringify(data)}
-      
-      Retorne:
-      {
-        "titulo": "string",
-        "resumo_executivo": "string",
-        "metodologia": "string",
-        "conclusao": "string"
-      }`,
-    ]);
+    const response = await (ai as any).models.generateContent({
+      model: modelName,
+      contents: [
+        `Com base nos dados periciais fornecidos abaixo, elabore a minuta do laudo pericial em formato JSON estrito:
+        ${JSON.stringify(data)}
+        
+        Retorne:
+        {
+          "titulo": "string",
+          "resumo_executivo": "string",
+          "metodologia": "string",
+          "conclusao": "string"
+        }`,
+      ],
+    });
 
-    const cleanedText = cleanJsonResponse(response.response.text());
+    const cleanedText = cleanJsonResponse(response.text || response.response?.text() || "");
     return JSON.parse(cleanedText);
   } catch (error: any) {
     console.error("Erro no generateLaudoMinuta:", error);
