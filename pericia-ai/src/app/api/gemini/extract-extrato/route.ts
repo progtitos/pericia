@@ -66,7 +66,7 @@ export async function POST(req: NextRequest) {
     const mimeType = document.mime_type || "application/pdf";
     const fileBase64 = Buffer.from(await fileBlob.arrayBuffer()).toString("base64");
     
-    // Força a tipagem do resultado retornado pela IA e garante fallbacks para os campos do cálculo
+    // Força a tipagem do resultado retornado pela IA e garante fallbacks
     const rawData = await extractExtratoBancario(fileBase64, mimeType);
     const extraido: ExtratoResult = {
       banco: rawData?.banco || "",
@@ -78,9 +78,9 @@ export async function POST(req: NextRequest) {
     };
 
     // Validação determinística de consistência
-    const reconciliacao = reconciliarExtrato(extraido as any);
+    const reconciliacao: any = reconciliarExtrato(extraido as any);
 
-    // Grava lançamentos normalizados, marcando os suspeitos
+    // Grava lançamentos normalizados, evitando erros do TS no campo 'suspeitos'
     const rows = (extraido.lancamentos || []).map((l: LancamentoExtrato, idx: number) => ({
       document_id: documentId,
       case_id: caseId,
