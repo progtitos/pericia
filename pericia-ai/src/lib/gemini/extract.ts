@@ -13,6 +13,7 @@ export interface ProgressoProcessamento {
   total_blocos?: number;
   blocos_concluidos?: number;
   etapa?: string;
+  erro?: string;
 }
 
 export async function processarTextoProcesso(
