@@ -27,6 +27,9 @@ export interface ProcessoTriagemResult {
   _chunking_info?: any;
 }
 
+/**
+ * Função utilitária para limpar blocos de código Markdown retornados pela API.
+ */
 function cleanJsonResponse(rawText: string): string {
   return rawText
     .replace(/^```json\s*/i, "")
@@ -87,20 +90,27 @@ export async function extractProcessoTriagem(
 }
 
 /**
- * 2. Extração de Extrato Bancário
+ * 2. Extração de Extrato Bancário (aceita Buffer ou Base64 + MimeType opcional)
  */
-export async function extractExtratoBancario(pdfBuffer: Buffer): Promise<any> {
+export async function extractExtratoBancario(
+  fileInput: Buffer | string,
+  mimeType: string = "application/pdf"
+): Promise<any> {
   const ai = getGeminiClient();
   const modelName = MODELS.FLASH || "gemini-2.5-flash";
   const model = ai.getGenerativeModel({ model: modelName });
 
   try {
-    const base64Pdf = pdfBuffer.toString("base64");
+    const base64Data =
+      typeof fileInput === "string"
+        ? fileInput
+        : fileInput.toString("base64");
+
     const response = await model.generateContent([
       {
         inlineData: {
-          data: base64Pdf,
-          mimeType: "application/pdf",
+          data: base64Data,
+          mimeType: mimeType,
         },
       },
       `Extraia as movimentações financeiras do extrato bancário em formato JSON estrito:
