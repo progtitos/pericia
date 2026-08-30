@@ -4,24 +4,14 @@ import { extractProcessoTriagem } from "@/lib/gemini/extract";
 import { isTokenLimitError } from "@/lib/gemini/chunking";
 import { anonymizeText, shouldAnonymize } from "@/lib/lgpd/anonymize";
 
-/** Mensagem amigável exibida no Toast/Alert do frontend quando o Gemini
- *  recusa a requisição por excedimento de tokens da janela de contexto,
- *  mesmo após a rede de segurança de chunking automático. */
 const MENSAGEM_LIMITE_TOKENS =
   "O limite de tokens da cota foi atingido para este arquivo. O sistema já tentou " +
   "dividir a análise em partes automaticamente; se o erro persistir, tente novamente " +
   "em alguns minutos ou divida o PDF manualmente antes do upload.";
 
 export const runtime = "nodejs";
-export const maxDuration = 120; // OCR de PDFs longos pode levar tempo
+export const maxDuration = 120;
 
-/**
- * POST /api/gemini/extract-processo
- * body: { documentId: string, caseId: string }
- * Lê o PDF já armazenado no Supabase Storage, envia ao Gemini e persiste
- * a extração estruturada em case_documents.extracted_json e nos metadados
- * do caso (forensic_cases.metadata).
- */
 export async function POST(req: NextRequest) {
   const supabase = await createClient();
   const {
@@ -40,7 +30,6 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // RLS garante que só documentos da própria org são retornados aqui.
   const { data: document, error: docError } = await supabase
     .from("case_documents")
     .select("*")
@@ -65,25 +54,7 @@ export async function POST(req: NextRequest) {
       throw new Error(`Falha ao baixar arquivo do Storage: ${downloadError?.message}`);
     }
 
-    let buffer = Buffer.from(await fileBlob.arrayBuffer());
-
-    // --- CORTE E TRUNCAAGEM PARA O PLANO GRATUITO ---
-    // Limite máximo de segurança: 8MB (~80.000 tokens) para evitar estouro no Free Tier
-    const MAX_ALLOWED_BYTES = 8 * 1024 * 1024;
-
-    if (buffer.length > MAX_ALLOWED_BYTES) {
-      const PART_SIZE = 4 * 1024 * 1024; // 4MB
-      
-      // Pega os primeiros 4MB (Início / Petição Inicial)
-      const head = buffer.subarray(0, PART_SIZE);
-      
-      // Pega os últimos 4MB (Fim / Sentença / Decisões finais)
-      const tail = buffer.subarray(buffer.length - PART_SIZE);
-
-      // Junta as duas pontas em um novo buffer seguro
-      buffer = Buffer.concat([head, tail]);
-    }
-    // ------------------------------------------------
+    const buffer = Buffer.from(await fileBlob.arrayBuffer());
 
     const extraido = await extractProcessoTriagem(buffer);
 
@@ -96,7 +67,6 @@ export async function POST(req: NextRequest) {
       })
       .eq("id", documentId);
 
-    // Atualiza metadados centrais do caso para uso nas fases seguintes.
     await supabase
       .from("forensic_cases")
       .update({
@@ -106,7 +76,6 @@ export async function POST(req: NextRequest) {
       })
       .eq("id", caseId);
 
-    // Auditoria (usa service role pois audit_log só permite select via RLS de usuário comum).
     const admin = createServiceRoleClient();
     await admin.from("audit_log").insert({
       actor_id: user.id,
