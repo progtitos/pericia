@@ -1,144 +1,114 @@
-import { getGeminiClient, MODELS } from "@/lib/gemini/client";
-import {
-  SYSTEM_INSTRUCTION_TRIAGEM,
-  TRIAGEM_RESPONSE_SCHEMA,
-  SYSTEM_INSTRUCTION_EXTRATO,
-  EXTRATO_RESPONSE_SCHEMA,
-  buildLaudoPrompt,
-} from "@/lib/gemini/prompts";
-import {
-  extractPdfPagesText,
-  buildTokenPreview,
-  processarProcessoEmCamadas,
-  isTokenLimitError,
-} from "@/lib/gemini/chunking";
-import type { ProcessoTriagemExtraido, ExtratoExtraido } from "@/lib/types";
+import { getGeminiClient, MODELS } from "./client";
+import { PROMPTS } from "./prompts";
+import { processInChunks } from "./chunking";
 
 /**
- * Fase 1: Triagem processual (PDF -> JSON estruturado).
- *
- * Fluxo (ver src/lib/gemini/chunking.ts para os detalhes de cada etapa):
- *   1. Extrai a camada de TEXTO do PDF e já remove ruído judicial repetido
- *      por página (timbre, assinatura eletrônica, numeração de folha).
- *   2. Decide se precisa de chunking usando estimativa por caracteres
- *      primeiro (barata); só confirma com contagem real de tokens quando
- *      isso já é seguro fazer — nunca conta tokens do documento inteiro às
- *      cegas, o que evita estourar antes mesmo de chegar ao chunking.
- *   3. Se couber dentro do limite seguro, envia o texto inteiro em uma
- *      única chamada. Caso contrário, processa em blocos de 200k-300k
- *      tokens (map-reduce determinístico).
- *   4. Rede de segurança final: se mesmo assim a API recusar por
- *      excedimento de contexto, cai automaticamente para o modo em camadas.
- *
- * @param pdfBuffer conteúdo binário do PDF
- * @param onProgress callback opcional para reportar progresso do chunking à UI
+ * Interface padronizada dos dados extraídos do processo na Triagem.
+ */
+export interface ProcessoTriagemResult {
+  numero_processo?: string;
+  autor?: string;
+  réu?: string;
+  vara?: string;
+  tribunal?: string;
+  especialidade?: string;
+  objeto_principal?: string;
+  pedidos_e_deferimentos?: string[];
+  datas_chave?: {
+    distribuição?: string;
+    citação?: string;
+    sentença?: string;
+    trânsito_em_julgado?: string;
+  };
+  valores_mencionados?: Array<{
+    tipo?: string;
+    valor?: number;
+    data_base?: string;
+  }>;
+  observacoes_para_conferencia_humana?: string;
+  _chunking_info?: any;
+}
+
+/**
+ * Função utilitária para limpar formatação Markdown ```json ... ``` que o Gemini costuma retornar.
+ */
+function cleanJsonResponse(rawText: string): string {
+  return rawText
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+}
+
+/**
+ * Extrai dados estruturados do PDF do processo para a fase de Triagem.
+ * Processa o documento via Gemini utilizando os modelos mais recentes e chunking se necessário.
  */
 export async function extractProcessoTriagem(
-  pdfBuffer: Buffer,
-  onProgress?: (blocoAtual: number, totalBlocos: number, rotulo: string) => void
-): Promise<ProcessoTriagemExtraido> {
-  const pages = await extractPdfPagesText(pdfBuffer);
-  const { preview, fullText } = await buildTokenPreview(pages);
+  pdfBuffer: Buffer
+): Promise<ProcessoTriagemResult> {
+  const ai = getGeminiClient();
 
-  if (preview.exigeChunking) {
-    return processarProcessoEmCamadas(pages, onProgress);
-  }
+  // Garante que o modelo utilizado seja o configurado no client (gemini-2.5-flash / gemini-3.1-pro-preview)
+  const modelName = MODELS.PRO || "gemini-2.5-flash";
+  const model = ai.getGenerativeModel({ model: modelName });
 
   try {
-    return await extractProcessoTriagemFromText(fullText);
-  } catch (err) {
-    // Rede de segurança: mesmo com a prévia indicando estar dentro do limite,
-    // overhead de schema/system prompt ou variações do modelo podem ainda
-    // assim estourar o contexto. Nesse caso, tentamos automaticamente pelo
-    // modo em camadas antes de propagar o erro ao usuário.
-    if (isTokenLimitError(err)) {
-      return processarProcessoEmCamadas(pages, onProgress);
-    }
-    throw err;
-  }
-}
-
-/** Extração estruturada a partir de texto puro já extraído e limpo do PDF. */
-async function extractProcessoTriagemFromText(
-  texto: string
-): Promise<ProcessoTriagemExtraido> {
-  const ai = getGeminiClient();
-
-  const response = await ai.models.generateContent({
-    model: MODELS.PRO,
-    contents: [
+    // 1. Tenta o processamento com a lógica de chunking/processamento seguro
+    const promptText = PROMPTS.TRIAGEM_PROCESSO || `
+      Você é um perito judicial especialista. Analise o texto do processo fornecido e extraia um JSON estrito com os dados numéricos e jurídicos essenciais para o recálculo.
+      Retorne APENAS um objeto JSON válido sem formatação markdown no seguinte formato:
       {
-        role: "user",
-        parts: [{ text: `Extraia os dados deste processo judicial conforme instruções do sistema.\n\nTEXTO:\n"""\n${texto}\n"""` }],
-      },
-    ],
-    config: {
-      systemInstruction: SYSTEM_INSTRUCTION_TRIAGEM,
-      responseMimeType: "application/json",
-      responseSchema: TRIAGEM_RESPONSE_SCHEMA,
-      temperature: 0, // determinismo máximo para tarefa de extração factual
-    },
-  });
-
-  return JSON.parse(response.text ?? "{}") as ProcessoTriagemExtraido;
-}
-
-/**
- * Fase 2: OCR de extrato bancário (PDF/imagem -> lançamentos tabulares).
- * Continua multimodal (envia a imagem/PDF binário) porque a confiança do
- * OCR de números rasurados/borrados depende do sinal visual — diferente da
- * triagem processual, aqui o "texto puro" não é suficiente para o objetivo
- * (checar rasura exige ver o traço, não só ler o dígito).
- */
-export async function extractExtratoBancario(
-  fileBase64: string,
-  mimeType: "application/pdf" | "image/png" | "image/jpeg"
-): Promise<ExtratoExtraido> {
-  const ai = getGeminiClient();
-
-  const response = await ai.models.generateContent({
-    model: MODELS.PRO,
-    contents: [
-      {
-        role: "user",
-        parts: [
-          { inlineData: { mimeType, data: fileBase64 } },
-          {
-            text: "Converta este extrato bancário em lançamentos estruturados conforme instruções do sistema.",
-          },
+        "numero_processo": "string",
+        "autor": "string",
+        "réu": "string",
+        "vara": "string",
+        "tribunal": "string",
+        "especialidade": "string",
+        "objeto_principal": "string",
+        "pedidos_e_deferimentos": ["string"],
+        "datas_chave": {
+          "distribuição": "YYYY-MM-DD",
+          "citação": "YYYY-MM-DD",
+          "sentença": "YYYY-MM-DD",
+          "trânsito_em_julgado": "YYYY-MM-DD"
+        },
+        "valores_mencionados": [
+          { "tipo": "string", "valor": 0.0, "data_base": "YYYY-MM-DD" }
         ],
-      },
-    ],
-    config: {
-      systemInstruction: SYSTEM_INSTRUCTION_EXTRATO,
-      responseMimeType: "application/json",
-      responseSchema: EXTRATO_RESPONSE_SCHEMA,
-      temperature: 0,
-    },
-  });
+        "observacoes_para_conferencia_humana": "string"
+      }
+    `;
 
-  return JSON.parse(response.text ?? "{}") as ExtratoExtraido;
-}
+    const resultText = await processInChunks(pdfBuffer, promptText, modelName);
+    const cleanedText = cleanJsonResponse(resultText);
 
-/**
- * Fase 4: Geração da minuta do laudo. Texto livre (Markdown), mas 100% dos
- * números vêm do resultado do motor de cálculo determinístico — a IA apenas
- * organiza a redação (ver regras em buildLaudoPrompt).
- */
-export async function generateLaudoMinuta(params: {
-  processoTriagem: unknown;
-  resultadoCalculo: unknown;
-  quesitosAprovados: { author: string; question_text: string }[];
-}): Promise<string> {
-  const ai = getGeminiClient();
+    const parsed = JSON.parse(cleanedText);
+    return parsed as ProcessoTriagemResult;
+  } catch (error: any) {
+    console.error("Erro no extractProcessoTriagem:", error);
 
-  const response = await ai.models.generateContent({
-    model: MODELS.PRO,
-    contents: [{ role: "user", parts: [{ text: buildLaudoPrompt(params) }] }],
-    config: {
-      temperature: 0.2, // pequena liberdade estilística, mantendo rigor factual
-    },
-  });
+    // Se falhar o parse do JSON ou a requisição direta, tenta um fallback usando gemini-2.5-flash diretamente
+    try {
+      const fallbackModel = ai.getGenerativeModel({ model: "gemini-2.5-flash" });
+      const base64Pdf = pdfBuffer.toString("base64");
 
-  return response.text ?? "";
+      const response = await fallbackModel.generateContent([
+        {
+          inlineData: {
+            data: base64Pdf,
+            mimeType: "application/pdf",
+          },
+        },
+        "Extraia apenas um objeto JSON estrito com os dados do processo: numero_processo, autor, réu, vara, observacoes_para_conferencia_humana.",
+      ]);
+
+      const text = cleanJsonResponse(response.response.text());
+      return JSON.parse(text) as ProcessoTriagemResult;
+    } catch (fallbackError) {
+      throw new Error(
+        `Falha ao extrair dados do processo via Gemini: ${error?.message || error}`
+      );
+    }
+  }
 }
