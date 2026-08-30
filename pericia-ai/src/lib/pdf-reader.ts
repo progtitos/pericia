@@ -1,44 +1,23 @@
+// pericia-ai/src/lib/pdf-reader.ts
+
 import * as pdfjsLib from "pdfjs-dist";
 
-// Worker via CDN para não sobrecarregar o build principal
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+// Configura o worker utilizando o unpkg com a versão exata instalada no seu projeto
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
-export interface ExtracaoResultado {
-  textoCompleto: string;
-  totalPaginas: number;
-  totalTokensEstimados: number;
-}
-
-export async function extrairTextoDoPdfClient(
-  file: File,
-  onProgress?: (porcentagem: number, paginasLidas: number, totalPaginas: number) => void
-): Promise<ExtracaoResultado> {
+export async function extractTextFromPDF(file: File): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-  const totalPaginas = pdf.numPages;
-  let textoCompleto = "";
+  let fullText = "";
 
-  for (let i = 1; i <= totalPaginas; i++) {
+  for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const textContent = await page.getTextContent();
     const pageText = textContent.items
       .map((item: any) => item.str)
       .join(" ");
-
-    textoCompleto += `\n--- PÁGINA ${i} ---\n` + pageText;
-
-    if (onProgress) {
-      const porcentagem = Math.round((i / totalPaginas) * 100);
-      onProgress(porcentagem, i, totalPaginas);
-    }
+    fullText += pageText + "\n";
   }
 
-  // Estimativa rápida e precisa de tokens para textos em Português (~3.8 caracteres por token)
-  const totalTokensEstimados = Math.ceil(textoCompleto.length / 3.8);
-
-  return {
-    textoCompleto,
-    totalPaginas,
-    totalTokensEstimados,
-  };
+  return fullText;
 }
