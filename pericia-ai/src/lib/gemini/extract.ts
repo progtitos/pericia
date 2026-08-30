@@ -34,26 +34,32 @@ function cleanJsonResponse(rawText: string): string {
 }
 
 /**
- * Retentativa genérica com exponential backoff para tratamento de cota / rate limit (HTTP 429)
+ * Retentativa com exponential backoff para HTTP 429 (Rate Limit) e HTTP 503 (Servidor Ocupado/Sobrecarga)
  */
 async function generateWithBackoff(
   ai: any,
   payload: any,
-  retries = 3,
-  delayMs = 2000
+  retries = 4,
+  delayMs = 3000
 ): Promise<any> {
   try {
     return await ai.models.generateContent(payload);
   } catch (error: any) {
-    const isRateLimit =
+    const isRetryableError =
       error?.status === 429 ||
+      error?.status === 503 ||
       error?.message?.includes("429") ||
+      error?.message?.includes("503") ||
       error?.message?.includes("RESOURCE_EXHAUSTED") ||
+      error?.message?.includes("UNAVAILABLE") ||
+      error?.message?.includes("high demand") ||
       error?.message?.includes("quota");
 
-    if (isRateLimit && retries > 0) {
+    if (isRetryableError && retries > 0) {
       console.warn(
-        `[Gemini API] Cota excedida. Aguardando ${delayMs / 1000}s para tentar novamente...`
+        `[Gemini API] Instabilidade/Cota/Sobrecarga (Status ${error?.status || '503/429'}). Tentando novamente em ${
+          delayMs / 1000
+        }s... (${retries} tentativas restantes)`
       );
       await new Promise((res) => setTimeout(res, delayMs));
       return generateWithBackoff(ai, payload, retries - 1, delayMs * 2);
@@ -63,7 +69,7 @@ async function generateWithBackoff(
 }
 
 /**
- * 1. Extração do Processo para Triagem (Texto Puro)
+ * 1. Extração do Processo para Triagem (Texto Puro com Resiliência a Erro 503/429)
  */
 export async function extractProcessoTriagem(
   pdfBuffer: Buffer
@@ -74,20 +80,17 @@ export async function extractProcessoTriagem(
   let extractedText = "";
 
   try {
-    // 1. Extrai a camada de texto puro do PDF para reduzir drasticamente a quantidade de tokens
     const parsedPdf = await pdfParse(pdfBuffer);
     extractedText = parsedPdf.text || "";
   } catch (pdfErr) {
     console.warn("Falha ao extrair texto puro com pdf-parse, seguindo com o buffer:", pdfErr);
   }
 
-  // Limita o texto puro aos primeiros 300.000 caracteres se o processo for gigantesco (preserva os principais dados iniciais)
   if (extractedText.length > 300000) {
     extractedText = extractedText.slice(0, 300000);
   }
 
   try {
-    // Monta o payload enviando Texto Puro se disponível, ou fallback para InlineData
     const contentsPayload = extractedText.trim().length > 100
       ? [
           `Analise o texto abaixo extraído do processo judicial e responda exclusivamente em JSON estrito.\n\nTEXTO DO PROCESSO:\n${extractedText}`,
@@ -136,7 +139,7 @@ export async function extractProcessoTriagem(
     console.error("Erro em extractProcessoTriagem:", error);
 
     throw new Error(
-      `Falha na extração de dados do processo: ${error?.message || error}`
+      `O serviço do Google Gemini está temporariamente instável ou indisponível (HTTP 503). Por favor, tente enviar o arquivo novamente em alguns segundos.`
     );
   }
 }
