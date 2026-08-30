@@ -196,14 +196,23 @@ export async function extractExtratoBancario(
   }
 }
 
-// 3. Geração de Laudo
-export async function generateLaudoMinuta(dadosProcesso: any, calculos: any): Promise<string> {
+// 3. Geração de Laudo (aceita 1 objeto ou 2 parâmetros separados)
+export async function generateLaudoMinuta(
+  paramsOrDados: any,
+  calculos?: any
+): Promise<string> {
   const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
+  let dadosPrompt = "";
+  if (calculos !== undefined) {
+    dadosPrompt = `Dados do Processo: ${JSON.stringify(paramsOrDados)}\nCálculos: ${JSON.stringify(calculos)}`;
+  } else {
+    dadosPrompt = `Parâmetros do Laudo: ${JSON.stringify(paramsOrDados)}`;
+  }
+
   const prompt = `
-  Elabore uma minuta de laudo pericial contábil/previdenciário com base nos dados do processo e nos cálculos fornecidos.
-  Dados do Processo: ${JSON.stringify(dadosProcesso)}
-  Cálculos: ${JSON.stringify(calculos)}
+  Elabore uma minuta de laudo pericial contábil/previdenciário com base nas informações fornecidas.
+  ${dadosPrompt}
   `;
 
   const result = await model.generateContent(prompt);
