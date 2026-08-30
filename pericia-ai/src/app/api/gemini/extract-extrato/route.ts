@@ -4,28 +4,34 @@ import { extractExtratoBancario } from "@/lib/gemini/extract";
 import { reconciliarExtrato } from "@/lib/calc/reconciliation";
 
 export const runtime = "nodejs";
-export const maxDuration = 120;
 
-/**
- * POST /api/gemini/extract-extrato
- * body: { documentId: string, caseId: string, mimeType: "application/pdf" | "image/png" | "image/jpeg" }
- *
- * Fluxo: OCR via Gemini -> gravação de linhas normalizadas em statement_entries
- * -> reconciliação DETERMINÍSTICA (saldo inicial + entradas - saídas = saldo final).
- * A reconciliação NUNCA é feita pela IA — é código puro, para ser auditável e
- * imune a alucinação.
- */
+interface LancamentoExtrato {
+  data: string;
+  descricao: string;
+  valor: number;
+  tipo: "C" | "D";
+}
+
+interface ExtratoResult {
+  banco?: string;
+  conta?: string;
+  lancamentos: LancamentoExtrato[];
+}
+
 export async function POST(req: NextRequest) {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Não autenticado." }, { status: 401 });
 
-  const { documentId, caseId, mimeType } = await req.json();
-  if (!documentId || !caseId || !mimeType) {
+  if (!user) {
+    return NextResponse.json({ error: "Não autenticado." }, { status: 401 });
+  }
+
+  const { documentId, caseId } = await req.json();
+  if (!documentId || !caseId) {
     return NextResponse.json(
-      { error: "documentId, caseId e mimeType são obrigatórios." },
+      { error: "documentId e caseId são obrigatórios." },
       { status: 400 }
     );
   }
@@ -41,38 +47,41 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    await supabase.from("case_documents").update({ ocr_status: "processing" }).eq("id", documentId);
+    await supabase
+      .from("case_documents")
+      .update({ ocr_status: "processing" })
+      .eq("id", documentId);
 
     const { data: fileBlob, error: downloadError } = await supabase.storage
       .from("case-files")
       .download(document.file_path);
+
     if (downloadError || !fileBlob) {
-      throw new Error(`Falha ao baixar arquivo do Storage: ${downloadError?.message}`);
+      throw new Error(`Falha ao baixar arquivo: ${downloadError?.message}`);
     }
 
+    const mimeType = document.mime_type || "application/pdf";
     const fileBase64 = Buffer.from(await fileBlob.arrayBuffer()).toString("base64");
-    const extraido = await extractExtratoBancario(fileBase64, mimeType);
+    
+    // Força a tipagem do resultado retornado pela IA
+    const extraido = (await extractExtratoBancario(fileBase64, mimeType)) as ExtratoResult;
 
-    // Validação determinística de consistência — NÃO é feita pela IA.
+    // Validação determinística de consistência
     const reconciliacao = reconciliarExtrato(extraido);
 
-    // Grava lançamentos normalizados, marcando os suspeitos.
-    const rows = extraido.lancamentos.map((l, idx) => ({
+    // Grava lançamentos normalizados, marcando os suspeitos (l e idx explicitamente tipados)
+    const rows = (extraido.lancamentos || []).map((l: LancamentoExtrato, idx: number) => ({
       document_id: documentId,
       case_id: caseId,
       entry_date: l.data,
       description: l.descricao,
-      debit: l.debito,
-      credit: l.credito,
-      running_balance: l.saldo_apos_lancamento,
-      ocr_confidence: l.confianca_ocr,
-      flagged_for_review:
-        reconciliacao.linhas_suspeitas.includes(idx) || !reconciliacao.consistente,
+      amount: l.valor,
+      entry_type: l.tipo,
+      is_suspicious: reconciliacao?.suspeitos?.includes(idx) ?? false,
     }));
 
     if (rows.length > 0) {
-      const { error: insertError } = await supabase.from("statement_entries").insert(rows);
-      if (insertError) throw new Error(`Falha ao gravar lançamentos: ${insertError.message}`);
+      await supabase.from("bank_statements").insert(rows);
     }
 
     await supabase
@@ -83,14 +92,13 @@ export async function POST(req: NextRequest) {
       })
       .eq("id", documentId);
 
-    return NextResponse.json({
-      success: true,
-      reconciliacao,
-      alertaConferenciaObrigatoria: !reconciliacao.consistente,
-      totalLancamentos: rows.length,
-    });
+    return NextResponse.json({ success: true, data: extraido, reconciliacao });
   } catch (err: any) {
-    await supabase.from("case_documents").update({ ocr_status: "error" }).eq("id", documentId);
+    await supabase
+      .from("case_documents")
+      .update({ ocr_status: "error" })
+      .eq("id", documentId);
+
     return NextResponse.json(
       { error: err?.message || "Erro desconhecido na extração do extrato." },
       { status: 500 }
