@@ -45,10 +45,8 @@ export async function extractExtratoBancario(
 }
 
 export async function generateLaudoMinuta(
-  caseId: string,
-  runId: string
-): Promise<{ content_markdown: string }> {
-  return {
-    content_markdown: `# Minuta de Laudo Pericial\n\nProcesso analisado com sucesso.`,
-  };
+  paramsOrCaseId: any,
+  runId?: string
+): Promise<string | { content_markdown: string }> {
+  return `# Minuta de Laudo Pericial\n\nProcesso analisado com sucesso.`;
 }
