@@ -4,7 +4,10 @@ import type { ProcessoTriagemExtraido } from "@/lib/types";
 
 export const SEGUNDOS_ESTIMADOS_POR_BLOCO_FALLBACK = 20;
 
-export async function processarTextoProcesso(texto: string, caseId?: string): Promise<ProcessoTriagemExtraido> {
+export async function processarTextoProcesso(
+  texto: string,
+  caseId?: string
+): Promise<ProcessoTriagemExtraido> {
   return {
     numero_processo: "Em análise",
     vara: null,
@@ -24,12 +27,18 @@ export async function extractExtratoBancario(
 ): Promise<{
   banco?: string;
   conta?: string;
+  saldo_inicial?: number;
+  saldo_final?: number;
+  alertas?: string[];
   lancamentos: any[];
-  saldo_final_informado: number | null;
+  saldo_final_informado?: number | null;
 }> {
   return {
     banco: "",
     conta: "",
+    saldo_inicial: 0,
+    saldo_final: 0,
+    alertas: [],
     lancamentos: [],
     saldo_final_informado: null,
   };
