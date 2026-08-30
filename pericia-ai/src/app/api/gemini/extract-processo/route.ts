@@ -65,16 +65,26 @@ export async function POST(req: NextRequest) {
       throw new Error(`Falha ao baixar arquivo do Storage: ${downloadError?.message}`);
     }
 
-    const buffer = Buffer.from(await fileBlob.arrayBuffer());
+    let buffer = Buffer.from(await fileBlob.arrayBuffer());
 
-    // Nota: a anonimização do texto extraído (CPF/nome/conta) acontece nos
-    // prompts que reutilizam esse texto em fases seguintes (ex.: geração da
-    // minuta), via anonymizeText — aqui o texto já passou pela camada de
-    // extração (pdf-parse), não pelo binário bruto.
-    // onProgress não é utilizável em tempo real numa única requisição HTTP
-    // request/response (sem streaming), mas cada bloco processado já fica
-    // registrado em extraido._chunking_info.blocos para exibição na UI e
-    // no log de auditoria abaixo.
+    // --- CORTE E TRUNCAAGEM PARA O PLANO GRATUITO ---
+    // Limite máximo de segurança: 8MB (~80.000 tokens) para evitar estouro no Free Tier
+    const MAX_ALLOWED_BYTES = 8 * 1024 * 1024;
+
+    if (buffer.length > MAX_ALLOWED_BYTES) {
+      const PART_SIZE = 4 * 1024 * 1024; // 4MB
+      
+      // Pega os primeiros 4MB (Início / Petição Inicial)
+      const head = buffer.subarray(0, PART_SIZE);
+      
+      // Pega os últimos 4MB (Fim / Sentença / Decisões finais)
+      const tail = buffer.subarray(buffer.length - PART_SIZE);
+
+      // Junta as duas pontas em um novo buffer seguro
+      buffer = Buffer.concat([head, tail]);
+    }
+    // ------------------------------------------------
+
     const extraido = await extractProcessoTriagem(buffer);
 
     await supabase
@@ -116,9 +126,6 @@ export async function POST(req: NextRequest) {
       .update({ ocr_status: "error" })
       .eq("id", documentId);
 
-    // Erro de excedimento de tokens (400/INVALID_ARGUMENT) recebe mensagem
-    // amigável e um código próprio para o frontend renderizar o alerta
-    // estilizado, em vez do erro cru da API do Gemini.
     if (isTokenLimitError(err)) {
       return NextResponse.json(
         { error: MENSAGEM_LIMITE_TOKENS, code: "TOKEN_LIMIT_EXCEEDED" },
