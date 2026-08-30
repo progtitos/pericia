@@ -33,13 +33,13 @@ function cleanJsonResponse(rawText: string): string {
 }
 
 /**
- * Extração do Processo para Triagem (utilizando gemini-2.5-flash / gemini-2.5-pro)
+ * 1. Extração do Processo para Triagem (utilizando gemini-3.6-flash)
  */
 export async function extractProcessoTriagem(
   pdfBuffer: Buffer
 ): Promise<ProcessoTriagemResult> {
   const ai = getGeminiClient();
-  const modelName = MODELS.PRO || "gemini-2.5-flash";
+  const modelName = MODELS.PRO || "gemini-3.6-flash";
 
   try {
     const base64Pdf = pdfBuffer.toString("base64");
@@ -83,11 +83,10 @@ export async function extractProcessoTriagem(
   } catch (error: any) {
     console.error("Erro no extractProcessoTriagem:", error);
 
-    // Fallback garantido usando gemini-2.5-flash se houver falha no modelo principal
     try {
       const base64Pdf = pdfBuffer.toString("base64");
       const fallbackResponse = await (ai as any).models.generateContent({
-        model: "gemini-2.5-flash",
+        model: "gemini-3.6-flash",
         contents: [
           {
             inlineData: {
@@ -112,14 +111,14 @@ export async function extractProcessoTriagem(
 }
 
 /**
- * Extração de Extrato Bancário
+ * 2. Extração de Extrato Bancário
  */
 export async function extractExtratoBancario(
   fileInput: Buffer | string,
   mimeType: string = "application/pdf"
 ): Promise<any> {
   const ai = getGeminiClient();
-  const modelName = MODELS.FLASH || "gemini-2.5-flash";
+  const modelName = MODELS.FLASH || "gemini-3.6-flash";
 
   try {
     const base64Data =
@@ -159,11 +158,11 @@ export async function extractExtratoBancario(
 }
 
 /**
- * Geração de Minuta / Laudo Pericial
+ * 3. Geração de Minuta / Laudo Pericial
  */
 export async function generateLaudoMinuta(data: any): Promise<any> {
   const ai = getGeminiClient();
-  const modelName = MODELS.PRO || "gemini-2.5-flash";
+  const modelName = MODELS.PRO || "gemini-3.6-flash";
 
   try {
     const response = await (ai as any).models.generateContent({
