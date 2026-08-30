@@ -1,6 +1,5 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-// Inicialização Lazy apontando para o modelo recomendado (gemini-3.6-flash)
 function getGeminiModel(modelName = "gemini-3.6-flash") {
   const apiKey = process.env.GOOGLE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -10,7 +9,7 @@ function getGeminiModel(modelName = "gemini-3.6-flash") {
   return genAI.getGenerativeModel({ model: modelName });
 }
 
-export const SEGUNDOS_ESTIMADOS_POR_BLOCO_FALLBACK = 4;
+export const SEGUNDOS_ESTIMADOS_POR_BLOCO_FALLBACK = 15;
 
 export interface ProgressoProcessamento {
   progresso: number;
@@ -55,7 +54,8 @@ export function montarProgresso({
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function dividirTextoEmBlocos(texto: string, tamanhoMaximoCaracteres = 180000): string[] {
+// Reduzido para 80.000 caracteres para não estourar os limites de token por minuto
+function dividirTextoEmBlocos(texto: string, tamanhoMaximoCaracteres = 80000): string[] {
   if (texto.length <= tamanhoMaximoCaracteres) {
     return [texto];
   }
@@ -91,7 +91,7 @@ export async function processarExtracaoProcessoFreeTier(
   const model = getGeminiModel("gemini-3.6-flash");
   const textoCompleto = bufferPdf.toString("utf-8");
 
-  const blocos = dividirTextoEmBlocos(textoCompleto, 180000);
+  const blocos = dividirTextoEmBlocos(textoCompleto, 80000);
   const totalBlocos = blocos.length;
 
   let resultadoAcumulado: any = {};
@@ -143,8 +143,9 @@ export async function processarExtracaoProcessoFreeTier(
       console.warn(`[Gemini Extract] Falha ao fazer parse do JSON no bloco ${i + 1}:`, e);
     }
 
+    // Aguarda 15 segundos entre as chamadas para respeitar o Rate Limit do plano gratuito
     if (i < totalBlocos - 1) {
-      await delay(3000);
+      await delay(15000);
     }
   }
 
@@ -153,8 +154,8 @@ export async function processarExtracaoProcessoFreeTier(
     blocos: blocos.map((b, index) => ({
       indice: index + 1,
       rotulo: `Bloco ${index + 1}`,
-      paginaInicial: index * 150 + 1,
-      paginaFinal: Math.min((index + 1) * 150, 775),
+      paginaInicial: index * 50 + 1,
+      paginaFinal: Math.min((index + 1) * 50, 775),
       tokensEstimados: Math.round(b.length / 4),
     })),
   };
