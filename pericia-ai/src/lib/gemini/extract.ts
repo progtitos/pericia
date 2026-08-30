@@ -1,3 +1,4 @@
+import PDFParser from "pdf2json";
 import { getGeminiClient, MODELS } from "./client";
 
 export interface ProcessoTriagemResult {
@@ -32,14 +33,31 @@ function cleanJsonResponse(rawText: string): string {
     .trim();
 }
 
-/**
- * Retentativa automática para tratar requisições sobrecarregadas (429/503)
- */
+/** Extrai texto puro do Buffer PDF de forma assíncrona no Node.js */
+function extractTextFromPdfBuffer(pdfBuffer: Buffer): Promise<string> {
+  return new Promise((resolve) => {
+    const pdfParser = new PDFParser(null, true);
+
+    pdfParser.on("pdfParser_dataError", (errData: any) => {
+      console.warn("Aviso na leitura de texto do PDF:", errData.parserError);
+      resolve("");
+    });
+
+    pdfParser.on("pdfParser_dataReady", () => {
+      const rawText = pdfParser.getRawTextContent();
+      resolve(rawText || "");
+    });
+
+    pdfParser.parseBuffer(pdfBuffer);
+  });
+}
+
+/** Retentativa automática para instabilidades temporárias */
 async function generateWithBackoff(
   ai: any,
   payload: any,
   retries = 3,
-  delayMs = 2500
+  delayMs = 3000
 ): Promise<any> {
   try {
     return await ai.models.generateContent(payload);
@@ -53,9 +71,6 @@ async function generateWithBackoff(
       error?.message?.includes("UNAVAILABLE");
 
     if (isRetryableError && retries > 0) {
-      console.warn(
-        `[Gemini API] Aguardando ${delayMs / 1000}s devido a limite de cota ou instabilidade...`
-      );
       await new Promise((res) => setTimeout(res, delayMs));
       return generateWithBackoff(ai, payload, retries - 1, delayMs * 2);
     }
@@ -63,49 +78,62 @@ async function generateWithBackoff(
   }
 }
 
-/**
- * 1. Extração do Processo para Triagem (Buffer Seguro)
- */
 export async function extractProcessoTriagem(
   pdfBuffer: Buffer
 ): Promise<ProcessoTriagemResult> {
   const ai = getGeminiClient();
   const modelName = MODELS.FLASH || "gemini-3.6-flash";
 
+  let textContent = await extractTextFromPdfBuffer(pdfBuffer);
+
+  // Se o texto for gigantesco (> 150.000 caracteres), corta o miolo (procurações, guias)
+  // e envia apenas as pontas essenciais para encaixar na cota gratuita de TPM
+  if (textContent.length > 150000) {
+    const headText = textContent.slice(0, 100000); // Primeiras ~20-30 pgs
+    const tailText = textContent.slice(-50000);   // Últimas ~10-15 pgs
+    textContent = `${headText}\n\n[...TRECHO INTERMEDIÁRIO DE ANEXOS/CERTIDÕES OMISSOS PARA ADEQUAÇÃO DE COTA...]\n\n${tailText}`;
+  }
+
   try {
-    const base64Pdf = pdfBuffer.toString("base64");
+    // Se extraiu texto relevante, envia apenas a string (muito mais leve que o PDF Base64)
+    const contentsPayload = textContent.trim().length > 200
+      ? [
+          `Analise o texto do processo judicial abaixo e responda estritamente em JSON.\n\nTEXTO:\n${textContent}`,
+          `Estrutura JSON esperada:
+          {
+            "numero_processo": "string",
+            "autor": "string",
+            "réu": "string",
+            "vara": "string",
+            "tribunal": "string",
+            "especialidade": "string",
+            "objeto_principal": "string",
+            "pedidos_e_deferimentos": ["string"],
+            "datas_chave": {
+              "distribuição": "YYYY-MM-DD",
+              "citação": "YYYY-MM-DD",
+              "sentença": "YYYY-MM-DD",
+              "trânsito_em_julgado": "YYYY-MM-DD"
+            },
+            "valores_mencionados": [
+              { "tipo": "string", "valor": 0.0, "data_base": "YYYY-MM-DD" }
+            ],
+            "observacoes_para_conferencia_humana": "string"
+          }`
+        ]
+      : [
+          {
+            inlineData: {
+              data: pdfBuffer.toString("base64"),
+              mimeType: "application/pdf",
+            },
+          },
+          `Analise o processo e extraia os dados em JSON estrito.`
+        ];
 
     const response = await generateWithBackoff(ai as any, {
       model: modelName,
-      contents: [
-        {
-          inlineData: {
-            data: base64Pdf,
-            mimeType: "application/pdf",
-          },
-        },
-        `Você é um perito judicial especialista. Analise o processo enviado e extraia um JSON estrito contendo:
-        {
-          "numero_processo": "string",
-          "autor": "string",
-          "réu": "string",
-          "vara": "string",
-          "tribunal": "string",
-          "especialidade": "string",
-          "objeto_principal": "string",
-          "pedidos_e_deferimentos": ["string"],
-          "datas_chave": {
-            "distribuição": "YYYY-MM-DD",
-            "citação": "YYYY-MM-DD",
-            "sentença": "YYYY-MM-DD",
-            "trânsito_em_julgado": "YYYY-MM-DD"
-          },
-          "valores_mencionados": [
-            { "tipo": "string", "valor": 0.0, "data_base": "YYYY-MM-DD" }
-          ],
-          "observacoes_para_conferencia_humana": "string"
-        }`,
-      ],
+      contents: contentsPayload,
     });
 
     const cleanedText = cleanJsonResponse(
@@ -113,17 +141,11 @@ export async function extractProcessoTriagem(
     );
     return JSON.parse(cleanedText) as ProcessoTriagemResult;
   } catch (error: any) {
-    console.error("Erro em extractProcessoTriagem:", error);
-
-    throw new Error(
-      `Falha no processamento: ${error?.message || error}`
-    );
+    console.error("Erro na triagem:", error);
+    throw error;
   }
 }
 
-/**
- * 2. Extração de Extrato Bancário
- */
 export async function extractExtratoBancario(
   fileInput: Buffer | string,
   mimeType: string = "application/pdf"
@@ -131,69 +153,27 @@ export async function extractExtratoBancario(
   const ai = getGeminiClient();
   const modelName = MODELS.FLASH || "gemini-3.6-flash";
 
-  try {
-    const base64Data =
-      typeof fileInput === "string" ? fileInput : fileInput.toString("base64");
+  const base64Data = typeof fileInput === "string" ? fileInput : fileInput.toString("base64");
 
-    const response = await generateWithBackoff(ai as any, {
-      model: modelName,
-      contents: [
-        {
-          inlineData: {
-            data: base64Data,
-            mimeType: mimeType,
-          },
-        },
-        `Extraia as movimentações financeiras do extrato bancário em formato JSON estrito:
-        {
-          "banco": "string",
-          "conta": "string",
-          "saldo_inicial": 0.0,
-          "saldo_final": 0.0,
-          "alertas": ["string"],
-          "lancamentos": [
-            { "data": "YYYY-MM-DD", "descricao": "string", "valor": 0.0, "tipo": "C ou D" }
-          ]
-        }`,
-      ],
-    });
+  const response = await generateWithBackoff(ai as any, {
+    model: modelName,
+    contents: [
+      { inlineData: { data: base64Data, mimeType } },
+      `Extraia as movimentações financeiras do extrato em JSON.`
+    ],
+  });
 
-    const cleanedText = cleanJsonResponse(response.text || response.response?.text() || "");
-    return JSON.parse(cleanedText);
-  } catch (error: any) {
-    console.error("Erro em extractExtratoBancario:", error);
-    throw new Error(`Falha ao extrair extrato: ${error?.message || error}`);
-  }
+  return JSON.parse(cleanJsonResponse(response.text || response.response?.text() || ""));
 }
 
-/**
- * 3. Geração de Minuta / Laudo Pericial
- */
 export async function generateLaudoMinuta(data: any): Promise<any> {
   const ai = getGeminiClient();
   const modelName = MODELS.FLASH || "gemini-3.6-flash";
 
-  try {
-    const response = await generateWithBackoff(ai as any, {
-      model: modelName,
-      contents: [
-        `Com base nos dados periciais, elabore a minuta do laudo pericial em JSON estrito:
-        ${JSON.stringify(data)}
-        
-        Retorne:
-        {
-          "titulo": "string",
-          "resumo_executivo": "string",
-          "metodologia": "string",
-          "conclusao": "string"
-        }`,
-      ],
-    });
+  const response = await generateWithBackoff(ai as any, {
+    model: modelName,
+    contents: [`Elabore a minuta do laudo pericial em JSON: ${JSON.stringify(data)}`],
+  });
 
-    const cleanedText = cleanJsonResponse(response.text || response.response?.text() || "");
-    return JSON.parse(cleanedText);
-  } catch (error: any) {
-    console.error("Erro em generateLaudoMinuta:", error);
-    throw new Error(`Falha ao gerar minuta: ${error?.message || error}`);
-  }
+  return JSON.parse(cleanJsonResponse(response.text || response.response?.text() || ""));
 }
