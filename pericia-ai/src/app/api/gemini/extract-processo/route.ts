@@ -10,7 +10,7 @@ const MENSAGEM_LIMITE_TOKENS =
   "em alguns minutos ou divida o PDF manualmente antes do upload.";
 
 export const runtime = "nodejs";
-export const maxDuration = 120;
+export const maxDuration = 60; // Limite padrão suportado em rotas Serverless Pro
 
 export async function POST(req: NextRequest) {
   const supabase = await createClient();
@@ -22,7 +22,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Não autenticado." }, { status: 401 });
   }
 
-  const { documentId, caseId } = await req.json();
+  let body: { documentId?: string; caseId?: string } = {};
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Body inválido." }, { status: 400 });
+  }
+
+  const { documentId, caseId } = body;
   if (!documentId || !caseId) {
     return NextResponse.json(
       { error: "documentId e caseId são obrigatórios." },
@@ -56,7 +63,12 @@ export async function POST(req: NextRequest) {
 
     const buffer = Buffer.from(await fileBlob.arrayBuffer());
 
+    // Executa a extração do Gemini
     const extraido = await extractProcessoTriagem(buffer);
+
+    if (!extraido || typeof extraido !== "object") {
+      throw new Error("A resposta retornada pelo motor de extração é inválida.");
+    }
 
     await supabase
       .from("case_documents")
@@ -80,7 +92,9 @@ export async function POST(req: NextRequest) {
     await admin.from("audit_log").insert({
       actor_id: user.id,
       case_id: caseId,
-      action: extraido._chunking_info ? "extract_processo_triagem_em_camadas" : "extract_processo_triagem",
+      action: extraido._chunking_info
+        ? "extract_processo_triagem_em_camadas"
+        : "extract_processo_triagem",
       details: {
         documentId,
         observacoes: extraido.observacoes_para_conferencia_humana,
@@ -88,7 +102,7 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    return NextResponse.json({ success: true, data: extraido });
+    return NextResponse.json({ success: true, data: extraido }, { status: 200 });
   } catch (err: any) {
     await supabase
       .from("case_documents")
@@ -102,8 +116,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Tratamento estrito para garantir que o erro retorne sempre em JSON válido
+    const errorMessage = err?.message || "Erro interno ao processar extração.";
     return NextResponse.json(
-      { error: err?.message || "Erro desconhecido na extração.", code: "UNKNOWN_ERROR" },
+      { error: errorMessage, code: "EXTRACTION_FAILED" },
       { status: 500 }
     );
   }

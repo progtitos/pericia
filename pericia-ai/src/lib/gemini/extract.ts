@@ -1,5 +1,8 @@
-import PDFParser from "pdf2json";
-import { getGeminiClient, MODELS } from "./client";
+import { GoogleAIFileManager } from "@google/generative-ai/server";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
 
 export interface ProcessoTriagemResult {
   numero_processo?: string;
@@ -26,123 +29,122 @@ export interface ProcessoTriagemResult {
 }
 
 function cleanJsonResponse(rawText: string): string {
-  return rawText
+  if (!rawText) return "{}";
+  
+  // Limpa blocos de código Markdown como ```json ... ```
+  let cleaned = rawText
     .replace(/^```json\s*/i, "")
     .replace(/^```\s*/i, "")
     .replace(/\s*```$/i, "")
     .trim();
-}
 
-/** Extrai texto puro do Buffer PDF de forma assíncrona no Node.js */
-function extractTextFromPdfBuffer(pdfBuffer: Buffer): Promise<string> {
-  return new Promise((resolve) => {
-    const pdfParser = new PDFParser(null, true);
-
-    pdfParser.on("pdfParser_dataError", (errData: any) => {
-      console.warn("Aviso na leitura de texto do PDF:", errData.parserError);
-      resolve("");
-    });
-
-    pdfParser.on("pdfParser_dataReady", () => {
-      const rawText = pdfParser.getRawTextContent();
-      resolve(rawText || "");
-    });
-
-    pdfParser.parseBuffer(pdfBuffer);
-  });
-}
-
-/** Retentativa automática para instabilidades temporárias */
-async function generateWithBackoff(
-  ai: any,
-  payload: any,
-  retries = 3,
-  delayMs = 3000
-): Promise<any> {
-  try {
-    return await ai.models.generateContent(payload);
-  } catch (error: any) {
-    const isRetryableError =
-      error?.status === 429 ||
-      error?.status === 503 ||
-      error?.message?.includes("429") ||
-      error?.message?.includes("503") ||
-      error?.message?.includes("RESOURCE_EXHAUSTED") ||
-      error?.message?.includes("UNAVAILABLE");
-
-    if (isRetryableError && retries > 0) {
-      await new Promise((res) => setTimeout(res, delayMs));
-      return generateWithBackoff(ai, payload, retries - 1, delayMs * 2);
-    }
-    throw error;
+  // Garante que pega apenas do primeiro '{' até o último '}'
+  const startIdx = cleaned.indexOf("{");
+  const endIdx = cleaned.lastIndexOf("}");
+  if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+    cleaned = cleaned.substring(startIdx, endIdx + 1);
   }
+
+  return cleaned;
 }
 
+/**
+ * Processamento via Files API do Gemini (Para contas do plano PAGO com documentos gigantescos)
+ */
 export async function extractProcessoTriagem(
   pdfBuffer: Buffer
 ): Promise<ProcessoTriagemResult> {
-  const ai = getGeminiClient();
-  const modelName = MODELS.FLASH || "gemini-3.6-flash";
-
-  let textContent = await extractTextFromPdfBuffer(pdfBuffer);
-
-  // Se o texto for gigantesco (> 150.000 caracteres), corta o miolo (procurações, guias)
-  // e envia apenas as pontas essenciais para encaixar na cota gratuita de TPM
-  if (textContent.length > 150000) {
-    const headText = textContent.slice(0, 100000); // Primeiras ~20-30 pgs
-    const tailText = textContent.slice(-50000);   // Últimas ~10-15 pgs
-    textContent = `${headText}\n\n[...TRECHO INTERMEDIÁRIO DE ANEXOS/CERTIDÕES OMISSOS PARA ADEQUAÇÃO DE COTA...]\n\n${tailText}`;
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error("A chave GEMINI_API_KEY não foi configurada nas variáveis de ambiente.");
   }
 
-  try {
-    // Se extraiu texto relevante, envia apenas a string (muito mais leve que o PDF Base64)
-    const contentsPayload = textContent.trim().length > 200
-      ? [
-          `Analise o texto do processo judicial abaixo e responda estritamente em JSON.\n\nTEXTO:\n${textContent}`,
-          `Estrutura JSON esperada:
-          {
-            "numero_processo": "string",
-            "autor": "string",
-            "réu": "string",
-            "vara": "string",
-            "tribunal": "string",
-            "especialidade": "string",
-            "objeto_principal": "string",
-            "pedidos_e_deferimentos": ["string"],
-            "datas_chave": {
-              "distribuição": "YYYY-MM-DD",
-              "citação": "YYYY-MM-DD",
-              "sentença": "YYYY-MM-DD",
-              "trânsito_em_julgado": "YYYY-MM-DD"
-            },
-            "valores_mencionados": [
-              { "tipo": "string", "valor": 0.0, "data_base": "YYYY-MM-DD" }
-            ],
-            "observacoes_para_conferencia_humana": "string"
-          }`
-        ]
-      : [
-          {
-            inlineData: {
-              data: pdfBuffer.toString("base64"),
-              mimeType: "application/pdf",
-            },
-          },
-          `Analise o processo e extraia os dados em JSON estrito.`
-        ];
+  const fileManager = new GoogleAIFileManager(apiKey);
+  const genAI = new GoogleGenerativeAI(apiKey);
 
-    const response = await generateWithBackoff(ai as any, {
-      model: modelName,
-      contents: contentsPayload,
+  // 1. Salva o PDF no disco temporário do servidor
+  const tempFilePath = path.join(os.tmpdir(), `processo_${Date.now()}.pdf`);
+  await fs.promises.writeFile(tempFilePath, pdfBuffer);
+
+  let uploadResult: any = null;
+
+  try {
+    // 2. Upload para a Files API do Gemini
+    uploadResult = await fileManager.uploadFile(tempFilePath, {
+      mimeType: "application/pdf",
+      displayName: "Processo Judicial Compl.",
     });
 
-    const cleanedText = cleanJsonResponse(
-      response.text || response.response?.text() || ""
-    );
-    return JSON.parse(cleanedText) as ProcessoTriagemResult;
-  } catch (error: any) {
-    console.error("Erro na triagem:", error);
-    throw error;
+    // 3. Aguarda o processamento interno do arquivo no Google
+    let fileState = await fileManager.getFile(uploadResult.file.name);
+    let attempts = 0;
+    while (fileState.state === "PROCESSING" && attempts < 15) {
+      await new Promise((res) => setTimeout(res, 2000));
+      fileState = await fileManager.getFile(uploadResult.file.name);
+      attempts++;
+    }
+
+    if (fileState.state === "FAILED") {
+      throw new Error("O Google Gemini não conseguiu processar a estrutura desse PDF.");
+    }
+
+    // 4. Utiliza o modelo gemini-1.5-flash (capaz de ler até 1 a 2 milhões de tokens)
+    const model = genAI.getGenerativeModel({
+      model: "gemini-1.5-flash",
+      generationConfig: {
+        responseMimeType: "application/json", // Força resposta em JSON puro nativo
+      },
+    });
+
+    const prompt = `Você é um perito judicial especialista. Analise o processo judicial anexo e extraia os dados estritamente em formato JSON com o seguinte schema:
+{
+  "numero_processo": "string",
+  "autor": "string",
+  "réu": "string",
+  "vara": "string",
+  "tribunal": "string",
+  "especialidade": "string",
+  "objeto_principal": "string",
+  "pedidos_e_deferimentos": ["string"],
+  "datas_chave": {
+    "distribuição": "YYYY-MM-DD",
+    "citação": "YYYY-MM-DD",
+    "sentença": "YYYY-MM-DD",
+    "trânsito_em_julgado": "YYYY-MM-DD"
+  },
+  "valores_mencionados": [
+    { "tipo": "string", "valor": 0.0, "data_base": "YYYY-MM-DD" }
+  ],
+  "observacoes_para_conferencia_humana": "string"
+}`;
+
+    const response = await model.generateContent([
+      {
+        fileData: {
+          mimeType: uploadResult.file.mimeType,
+          fileUri: uploadResult.file.uri,
+        },
+      },
+      prompt,
+    ]);
+
+    const rawText = response.response.text();
+    const cleanedText = cleanJsonResponse(rawText);
+
+    try {
+      return JSON.parse(cleanedText) as ProcessoTriagemResult;
+    } catch (parseErr) {
+      console.error("Erro ao converter JSON do Gemini:", rawText);
+      throw new Error("O modelo não retornou um formato JSON válido. Tente novamente.");
+    }
+  } finally {
+    // Limpeza de arquivos temporários
+    if (fs.existsSync(tempFilePath)) {
+      await fs.promises.unlink(tempFilePath).catch(() => {});
+    }
+    if (uploadResult?.file?.name) {
+      await fileManager.deleteFile(uploadResult.file.name).catch(() => {});
+    }
   }
 }
 
@@ -150,30 +152,34 @@ export async function extractExtratoBancario(
   fileInput: Buffer | string,
   mimeType: string = "application/pdf"
 ): Promise<any> {
-  const ai = getGeminiClient();
-  const modelName = MODELS.FLASH || "gemini-3.6-flash";
+  const apiKey = process.env.GEMINI_API_KEY || "";
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-  const base64Data = typeof fileInput === "string" ? fileInput : fileInput.toString("base64");
+  const base64Data =
+    typeof fileInput === "string" ? fileInput : fileInput.toString("base64");
 
-  const response = await generateWithBackoff(ai as any, {
-    model: modelName,
-    contents: [
-      { inlineData: { data: base64Data, mimeType } },
-      `Extraia as movimentações financeiras do extrato em JSON.`
-    ],
-  });
+  const response = await model.generateContent([
+    {
+      inlineData: {
+        data: base64Data,
+        mimeType: mimeType,
+      },
+    },
+    `Extraia as movimentações financeiras do extrato bancário em formato JSON estrito.`,
+  ]);
 
-  return JSON.parse(cleanJsonResponse(response.text || response.response?.text() || ""));
+  return JSON.parse(cleanJsonResponse(response.response.text()));
 }
 
 export async function generateLaudoMinuta(data: any): Promise<any> {
-  const ai = getGeminiClient();
-  const modelName = MODELS.FLASH || "gemini-3.6-flash";
+  const apiKey = process.env.GEMINI_API_KEY || "";
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-  const response = await generateWithBackoff(ai as any, {
-    model: modelName,
-    contents: [`Elabore a minuta do laudo pericial em JSON: ${JSON.stringify(data)}`],
-  });
+  const response = await model.generateContent([
+    `Com base nos dados periciais, elabore a minuta do laudo em JSON: ${JSON.stringify(data)}`,
+  ]);
 
-  return JSON.parse(cleanJsonResponse(response.text || response.response?.text() || ""));
+  return JSON.parse(cleanJsonResponse(response.response.text()));
 }
