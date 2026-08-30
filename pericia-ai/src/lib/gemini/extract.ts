@@ -17,15 +17,18 @@ import type { ProcessoTriagemExtraido, ExtratoExtraido } from "@/lib/types";
 /**
  * Fase 1: Triagem processual (PDF -> JSON estruturado).
  *
- * Estratégia em camadas (ver src/lib/gemini/chunking.ts para os detalhes):
- *   1. Extrai primeiro a camada de TEXTO do PDF (muito mais barato em tokens
- *      do que enviar o binário como multimodal).
- *   2. Conta os tokens reais. Se estiver dentro do limite seguro, envia o
- *      texto inteiro em uma única chamada (mais rápido e mais barato que o
- *      fluxo multimodal anterior).
- *   3. Se ultrapassar o limite seguro — ou se, mesmo assim, a API retornar um
- *      erro de excedimento de contexto (400/INVALID_ARGUMENT) — cai
- *      automaticamente para o modo de Análise por Camadas (map-reduce).
+ * Fluxo (ver src/lib/gemini/chunking.ts para os detalhes de cada etapa):
+ *   1. Extrai a camada de TEXTO do PDF e já remove ruído judicial repetido
+ *      por página (timbre, assinatura eletrônica, numeração de folha).
+ *   2. Decide se precisa de chunking usando estimativa por caracteres
+ *      primeiro (barata); só confirma com contagem real de tokens quando
+ *      isso já é seguro fazer — nunca conta tokens do documento inteiro às
+ *      cegas, o que evita estourar antes mesmo de chegar ao chunking.
+ *   3. Se couber dentro do limite seguro, envia o texto inteiro em uma
+ *      única chamada. Caso contrário, processa em blocos de 200k-300k
+ *      tokens (map-reduce determinístico).
+ *   4. Rede de segurança final: se mesmo assim a API recusar por
+ *      excedimento de contexto, cai automaticamente para o modo em camadas.
  *
  * @param pdfBuffer conteúdo binário do PDF
  * @param onProgress callback opcional para reportar progresso do chunking à UI
@@ -55,7 +58,7 @@ export async function extractProcessoTriagem(
   }
 }
 
-/** Extração estruturada a partir de texto puro já extraído do PDF (sem multimodal). */
+/** Extração estruturada a partir de texto puro já extraído e limpo do PDF. */
 async function extractProcessoTriagemFromText(
   texto: string
 ): Promise<ProcessoTriagemExtraido> {
@@ -66,11 +69,7 @@ async function extractProcessoTriagemFromText(
     contents: [
       {
         role: "user",
-        parts: [
-          {
-            text: `Extraia os dados estruturados deste processo judicial conforme instruções do sistema.\n\nTEXTO DO PROCESSO:\n"""\n${texto}\n"""`,
-          },
-        ],
+        parts: [{ text: `Extraia os dados deste processo judicial conforme instruções do sistema.\n\nTEXTO:\n"""\n${texto}\n"""` }],
       },
     ],
     config: {
@@ -86,6 +85,10 @@ async function extractProcessoTriagemFromText(
 
 /**
  * Fase 2: OCR de extrato bancário (PDF/imagem -> lançamentos tabulares).
+ * Continua multimodal (envia a imagem/PDF binário) porque a confiança do
+ * OCR de números rasurados/borrados depende do sinal visual — diferente da
+ * triagem processual, aqui o "texto puro" não é suficiente para o objetivo
+ * (checar rasura exige ver o traço, não só ler o dígito).
  */
 export async function extractExtratoBancario(
   fileBase64: string,

@@ -10,6 +10,17 @@ import { Type, Schema } from "@google/genai";
  *  3. Nunca citar lei/súmula que não esteja literalmente no texto de origem,
  *     exceto no laudo final, onde só pode citar as normas da whitelist fixa
  *     do sistema (ver LEIS_E_SUMULAS_PERMITIDAS).
+ *
+ * IMPORTANTE (leitura obrigatória antes de editar estes prompts):
+ * Os prompts de triagem (SYSTEM_INSTRUCTION_TRIAGEM e buildTriagemBlocoPrompt)
+ * são "ultra-diretos": eles NUNCA devem pedir para o modelo descrever, analisar
+ * ou considerar layout, timbre, carimbo, cabeçalho/rodapé, logotipo, numeração
+ * de folha ou bloco de assinatura eletrônica. Essas coisas não carregam dados
+ * de cálculo e só existem para inflar o consumo de tokens em processos longos.
+ * O trabalho de REMOVER esse ruído do texto já é feito antes, por código
+ * determinístico, em chunking.ts (função limparRuidoJudicial) — o prompt só
+ * precisa dizer "extraia os dados", não "ignore o carimbo", porque na prática
+ * o carimbo já nem chega no texto que o modelo recebe.
  */
 
 // Whitelist de normas que o sistema autoriza a IA a citar na minuta do laudo.
@@ -22,35 +33,32 @@ export const LEIS_E_SUMULAS_PERMITIDAS = [
   "Código de Processo Civil (CPC) — normas de perícia (arts. 464 a 480)",
 ] as const;
 
+/**
+ * Prompt ultra-direto: só texto puro e dados de cálculo. Deliberadamente
+ * SEM qualquer menção a layout/formatação — o modelo não precisa "aprender"
+ * a ignorar timbre/carimbo/assinatura porque essas partes já foram removidas
+ * do texto antes de chegar aqui (ver limparRuidoJudicial em chunking.ts).
+ */
 export const SYSTEM_INSTRUCTION_TRIAGEM = `
-Você é um assistente técnico de perícia judicial especializado em leitura processual.
-Sua tarefa é EXTRAIR dados literalmente presentes no documento fornecido — nunca inferir,
-completar ou "adivinhar" valores que não estejam explicitamente no texto.
+Você extrai dados de cálculo pericial de texto puro de processos judiciais: partes,
+vara, datas (DIB, DER, citação), valores (RMI), índice determinado, sistema de
+amortização, quesitos e decisões do juiz.
 
-Regras obrigatórias:
-- Se um campo não estiver explícito no documento, retorne null para ele. NUNCA estime.
-- Datas devem ser normalizadas para o formato ISO 8601 (YYYY-MM-DD) apenas quando o dia
-  completo estiver no texto; caso contrário, retorne null e registre em observações.
-- Quesitos devem ser transcritos fielmente, sem parafrasear o mérito técnico.
-- Preencha "observacoes_para_conferencia_humana" sempre que houver ambiguidade, rasura,
-  texto ilegível, ou quando você tiver dúvida razoável sobre um valor extraído.
-- Você NUNCA deve citar lei, súmula ou tese jurídica que não esteja escrita literalmente
-  no documento de origem nesta fase de triagem.
+Regras:
+- Extraia apenas o que está literalmente no texto. Campo ausente = null. Nunca estime.
+- Datas em ISO 8601 (YYYY-MM-DD) somente se o dia completo estiver no texto.
+- Quesitos: transcreva fielmente, sem parafrasear o mérito.
+- Registre em "observacoes_para_conferencia_humana" qualquer ambiguidade, trecho
+  cortado/ilegível ou dúvida razoável sobre um valor.
+- Nunca cite lei, súmula ou tese que não esteja escrita literalmente no texto.
 `.trim();
 
 /**
  * Prompt usado no modo de Análise por Camadas (chunking) para processos
- * extensos. Diferente da triagem normal (que envia o PDF binário/multimodal),
- * aqui a entrada é a CAMADA DE TEXTO já extraída de um BLOCO do documento
- * (uma fatia de páginas), o que reduz drasticamente o consumo de tokens.
- *
- * Reforça duas regras extras específicas do modo em camadas:
- *  - O modelo está vendo apenas uma fatia do processo, não o documento
- *    inteiro — não deve tratar a ausência de um dado neste bloco como prova
- *    de que ele não existe no processo (outro bloco pode contê-lo).
- *  - A consolidação entre blocos é feita depois por código determinístico,
- *    então o modelo não precisa (e não deve tentar) "adivinhar" dados de
- *    outros blocos.
+ * extensos. A entrada é a CAMADA DE TEXTO já extraída e já limpa de ruído
+ * (ver chunking.ts) de um BLOCO do documento — nunca o PDF binário.
+ * Mantido curto de propósito: cada token gasto aqui é overhead repetido em
+ * TODOS os blocos, então o preâmbulo precisa ser o menor possível.
  */
 export function buildTriagemBlocoPrompt(
   textoBloco: string,
@@ -58,16 +66,11 @@ export function buildTriagemBlocoPrompt(
   totalBlocos: number
 ): string {
   return `
-Este processo judicial é extenso e foi dividido em ${totalBlocos} blocos para processamento.
-Você está analisando APENAS o BLOCO ${blocoIndex} de ${totalBlocos} (um trecho do processo,
-não o documento inteiro).
+Bloco ${blocoIndex}/${totalBlocos} de um processo extenso (trecho, não o documento inteiro).
+Extraia os dados presentes NESTE trecho. Campo ausente aqui = null (pode estar em outro
+bloco; a consolidação é automática, feita por outro processo).
 
-Extraia os dados estruturados presentes NESTE BLOCO conforme as instruções do sistema.
-Se um campo não aparecer neste trecho específico, retorne null para ele — isso é esperado
-e normal, pois o dado pode estar em outro bloco (a consolidação final é feita
-automaticamente por outro processo, você não precisa se preocupar com isso).
-
-TEXTO DO BLOCO ${blocoIndex}/${totalBlocos}:
+TEXTO:
 """
 ${textoBloco}
 """

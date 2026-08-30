@@ -17,7 +17,8 @@ export function getGeminiClient(): GoogleGenAI {
 }
 
 export const MODELS = {
-  // Modelos recomendados e ativos pela API do Gemini
-  PRO: process.env.GEMINI_MODEL_PRO || "gemini-3.1-pro-preview",
-  FLASH: process.env.GEMINI_MODEL_FLASH || "gemini-2.5-flash",
+  // Pro: melhor para OCR de documentos longos/complexos e raciocínio jurídico.
+  PRO: process.env.GEMINI_MODEL_PRO || "gemini-1.5-pro",
+  // Flash: mais barato/rápido para tarefas menores (ex.: reclassificar poucas linhas).
+  FLASH: process.env.GEMINI_MODEL_FLASH || "gemini-1.5-flash",
 } as const;

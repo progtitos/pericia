@@ -146,7 +146,7 @@ export function FileUploader({
         <div className={`mt-4 rounded border p-3 ${statusStyle.bg}`}>
           <div className="flex items-center justify-between text-xs">
             <span className="font-medium text-ink-700">
-              {preview.totalTokens.toLocaleString("pt-BR")} tokens estimados
+              {preview.totalTokens.toLocaleString("pt-BR")} tokens {preview.estimado ? "(estimativa)" : "(contagem real)"}
               {preview.totalPaginas ? ` · ${preview.totalPaginas} páginas` : ""}
             </span>
             <span className={`font-medium ${statusStyle.text}`}>

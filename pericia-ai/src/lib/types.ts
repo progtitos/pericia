@@ -43,6 +43,10 @@ export interface TokenPreviewInfo {
   status: TokenWindowStatus;
   exigeChunking: boolean; // true quando ultrapassa o limite seguro configurado
   totalPaginas?: number;
+  /** true quando totalTokens vem de estimativa por caracteres (documento
+   *  grande demais para chamar a API real de contagem com segurança), false
+   *  quando vem de contagem real via API do Gemini. */
+  estimado?: boolean;
 }
 
 /** Um bloco/camada de um documento dividido por estratégia de chunking. */
