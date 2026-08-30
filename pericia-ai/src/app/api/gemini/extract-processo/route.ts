@@ -9,24 +9,14 @@ import { shouldAnonymize } from "@/lib/lgpd/anonymize";
 
 export const runtime = "nodejs";
 
-// Teto máximo de duração da própria invocação da function. Na Vercel: Hobby
-// limita a 60s (insuficiente mesmo em background); Pro permite até 300s por
-// padrão e até 800s com Fluid Compute habilitado no projeto. O trabalho
-// pesado roda via executarEmBackground() abaixo — este valor só limita
-// quanto tempo a invocação fica viva executando esse trabalho.
-export const maxDuration = 800;
+// Teto máximo de duração da função. No plano Hobby da Vercel o limite máximo é 60s.
+// Como o trabalho em background é delegado via waitUntil, 60s é mais do que o suficiente
+// para cobrir o ciclo de vida da execução sem estourar as regras de deploy da Vercel.
+export const maxDuration = 60;
 
 /**
  * Mantém a function serverless viva após o "return" da resposta HTTP para
- * que o processamento em background (chunking + delay de 6s por bloco)
- * continue até o fim. Usa waitUntil() do pacote @vercel/functions quando
- * disponível — RECOMENDADO em produção na Vercel:
- *
- *   npm install @vercel/functions
- *
- * Fora da Vercel (Node.js tradicional, Docker, Railway, Render etc.) o
- * fallback abaixo já funciona nativamente, pois o processo Node não é
- * congelado após o envio da resposta.
+ * que o processamento em background (chunking + delay por bloco) continue.
  */
 async function executarEmBackground(tarefa: () => Promise<void>): Promise<void> {
   try {
@@ -42,11 +32,6 @@ async function executarEmBackground(tarefa: () => Promise<void>): Promise<void> 
 /**
  * POST /api/gemini/extract-processo
  * body: { documentId: string, caseId: string }
- *
- * Dispara a extração do processo em background (chunking em texto puro +
- * delay de 6s por bloco, compatível com o Nível Gratuito do Gemini) e
- * responde IMEDIATAMENTE com 202. O andamento deve ser acompanhado via
- * GET /api/gemini/status-processo?documentId=...
  */
 export async function POST(req: NextRequest) {
   const supabase = await createClient();
@@ -73,8 +58,6 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Checagem de autorização com o client vinculado à sessão do usuário — RLS
-  // garante que ele só enxerga documentos dos próprios casos/organização.
   const { data: document, error: docError } = await supabase
     .from("case_documents")
     .select("id, file_path")
@@ -88,9 +71,6 @@ export async function POST(req: NextRequest) {
   const admin = createServiceRoleClient();
   const actorId = user.id;
 
-  // Marca o status inicial já na resposta síncrona, para que o primeiro
-  // polling em /api/gemini/status-processo, mesmo que chegue muito rápido,
-  // já encontre um estado coerente em vez de colunas vazias.
   const progressoInicial: ProgressoProcessamento = montarProgresso({
     status: "processing",
     blocosConcluidos: 0,
@@ -111,7 +91,6 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Dispara o processamento pesado em background e responde imediatamente.
   await executarEmBackground(async () => {
     let ultimoProgresso: ProgressoProcessamento = progressoInicial;
 
