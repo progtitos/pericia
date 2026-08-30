@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-function getGeminiModel(modelName = "gemini-3.6-flash") {
+function getGeminiModel(modelName = "gemini-2.5-flash") {
   const apiKey = process.env.GOOGLE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error("A variável de ambiente GOOGLE_GEMINI_API_KEY ou GEMINI_API_KEY não está definida.");
@@ -9,7 +9,7 @@ function getGeminiModel(modelName = "gemini-3.6-flash") {
   return genAI.getGenerativeModel({ model: modelName });
 }
 
-export const SEGUNDOS_ESTIMADOS_POR_BLOCO_FALLBACK = 15;
+export const SEGUNDOS_ESTIMADOS_POR_BLOCO_FALLBACK = 12;
 
 export interface ProgressoProcessamento {
   progresso: number;
@@ -54,7 +54,24 @@ export function montarProgresso({
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Reduzido para 80.000 caracteres para não estourar os limites de token por minuto
+// Função com retry automático em caso de erro 429 (Rate Limit)
+async function chamarGeminiComRetry(model: any, prompt: any, maxTentativas = 4) {
+  for (let tentativa = 1; tentativa <= maxTentativas; tentativa++) {
+    try {
+      return await model.generateContent(prompt);
+    } catch (erro: any) {
+      const eTexto = String(erro);
+      if (eTexto.includes("429") && tentativa < maxTentativas) {
+        const tempoEspera = tentativa * 12000; // 12s na 1ª, 24s na 2ª, 36s na 3ª
+        console.warn(`[Gemini 429] Limite temporário atingido. Retentativa ${tentativa}/${maxTentativas} em ${tempoEspera / 1000}s...`);
+        await delay(tempoEspera);
+      } else {
+        throw erro;
+      }
+    }
+  }
+}
+
 function dividirTextoEmBlocos(texto: string, tamanhoMaximoCaracteres = 80000): string[] {
   if (texto.length <= tamanhoMaximoCaracteres) {
     return [texto];
@@ -88,7 +105,7 @@ export async function processarExtracaoProcessoFreeTier(
     onProgress?: (progresso: ProgressoProcessamento) => Promise<void>;
   }
 ): Promise<any> {
-  const model = getGeminiModel("gemini-3.6-flash");
+  const model = getGeminiModel("gemini-2.5-flash");
   const textoCompleto = bufferPdf.toString("utf-8");
 
   const blocos = dividirTextoEmBlocos(textoCompleto, 80000);
@@ -131,7 +148,7 @@ export async function processarExtracaoProcessoFreeTier(
     ${blocoAtual}
     `;
 
-    const result = await model.generateContent(prompt);
+    const result = await chamarGeminiComRetry(model, prompt);
     const response = await result.response;
     const textResult = response.text();
 
@@ -143,9 +160,8 @@ export async function processarExtracaoProcessoFreeTier(
       console.warn(`[Gemini Extract] Falha ao fazer parse do JSON no bloco ${i + 1}:`, e);
     }
 
-    // Aguarda 15 segundos entre as chamadas para respeitar o Rate Limit do plano gratuito
     if (i < totalBlocos - 1) {
-      await delay(15000);
+      await delay(10000);
     }
   }
 
@@ -167,7 +183,7 @@ export async function extractExtratoBancario(
   fileBase64: string,
   mimeType: string = "application/pdf"
 ): Promise<any> {
-  const model = getGeminiModel("gemini-3.6-flash");
+  const model = getGeminiModel("gemini-2.5-flash");
 
   const prompt = `
   Extraia os dados deste extrato bancário em formato JSON.
@@ -178,7 +194,7 @@ export async function extractExtratoBancario(
   - transacoes: lista de objetos { data, descricao, valor, tipo }
   `;
 
-  const result = await model.generateContent([
+  const result = await chamarGeminiComRetry(model, [
     prompt,
     {
       inlineData: {
@@ -192,32 +208,4 @@ export async function extractExtratoBancario(
   const rawText = response.text();
 
   try {
-    const jsonStr = rawText.replace(/```json|```/g, "").trim();
-    return JSON.parse(jsonStr);
-  } catch {
-    return { banco: "", conta: "", periodo: "", transacoes: [], raw: rawText };
-  }
-}
-
-export async function generateLaudoMinuta(
-  paramsOrDados: any,
-  calculos?: any
-): Promise<string> {
-  const model = getGeminiModel("gemini-3.6-flash");
-
-  let dadosPrompt = "";
-  if (calculos !== undefined) {
-    dadosPrompt = `Dados do Processo: ${JSON.stringify(paramsOrDados)}\nCálculos: ${JSON.stringify(calculos)}`;
-  } else {
-    dadosPrompt = `Parâmetros do Laudo: ${JSON.stringify(paramsOrDados)}`;
-  }
-
-  const prompt = `
-  Elabore uma minuta de laudo pericial contábil/previdenciário com base nas informações fornecidas.
-  ${dadosPrompt}
-  `;
-
-  const result = await model.generateContent(prompt);
-  const response = await result.response;
-  return response.text();
-}
+    const jsonStr = rawText.replace(/```json|
