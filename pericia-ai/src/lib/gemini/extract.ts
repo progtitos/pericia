@@ -33,31 +33,31 @@ function cleanJsonResponse(rawText: string): string {
 }
 
 /**
- * Executa requisição à API com mecanismo de retentativa para evitar erro 429 (Rate Limit / Cota).
+ * Retentativa genérica com exponential backoff para tratamento de cota / rate limit (HTTP 429)
  */
-async function generateContentWithRetry(
+async function generateWithBackoff(
   ai: any,
   payload: any,
-  maxRetries = 3
+  retries = 3,
+  delayMs = 3000
 ): Promise<any> {
-  let delay = 2000;
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      return await ai.models.generateContent(payload);
-    } catch (err: any) {
-      const isRateLimit =
-        err?.status === 429 ||
-        err?.message?.includes("429") ||
-        err?.message?.includes("RESOURCE_EXHAUSTED");
+  try {
+    return await ai.models.generateContent(payload);
+  } catch (error: any) {
+    const isRateLimit =
+      error?.status === 429 ||
+      error?.message?.includes("429") ||
+      error?.message?.includes("RESOURCE_EXHAUSTED") ||
+      error?.message?.includes("quota");
 
-      if (isRateLimit && attempt < maxRetries) {
-        console.warn(`[Gemini API] Cota atingida (429). Tentativa ${attempt} de ${maxRetries}. Aguardando ${delay}ms...`);
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        delay *= 2; // Exponential backoff
-      } else {
-        throw err;
-      }
+    if (isRateLimit && retries > 0) {
+      console.warn(
+        `[Gemini API] Cota/Rate limit excedido. Aguardando ${delayMs / 1000}s para tentar novamente...`
+      );
+      await new Promise((res) => setTimeout(res, delayMs));
+      return generateWithBackoff(ai, payload, retries - 1, delayMs * 2);
     }
+    throw error;
   }
 }
 
@@ -68,12 +68,12 @@ export async function extractProcessoTriagem(
   pdfBuffer: Buffer
 ): Promise<ProcessoTriagemResult> {
   const ai = getGeminiClient();
-  const modelName = MODELS.PRO || "gemini-3.6-flash";
+  const modelName = MODELS.FLASH || "gemini-3.6-flash";
 
   try {
     const base64Pdf = pdfBuffer.toString("base64");
 
-    const response = await generateContentWithRetry(ai as any, {
+    const response = await generateWithBackoff(ai as any, {
       model: modelName,
       contents: [
         {
@@ -82,8 +82,7 @@ export async function extractProcessoTriagem(
             mimeType: "application/pdf",
           },
         },
-        `Você é um perito judicial especialista. Analise o texto do processo fornecido (focando prioritariamente na petição inicial, sentença e acórdão) e extraia um JSON estrito com os dados numéricos e jurídicos essenciais para o recálculo.
-        Retorne APENAS um objeto JSON válido no formato:
+        `Você é um perito judicial especialista. Analise o processo e extraia em JSON estrito:
         {
           "numero_processo": "string",
           "autor": "string",
@@ -110,39 +109,15 @@ export async function extractProcessoTriagem(
     const cleanedText = cleanJsonResponse(response.text || response.response?.text() || "");
     return JSON.parse(cleanedText) as ProcessoTriagemResult;
   } catch (error: any) {
-    console.error("Erro no extractProcessoTriagem:", error);
+    console.error("Erro em extractProcessoTriagem:", error);
 
-    // Tentativa de emergência simplificada caso o payload original estoure a cota de tokens
-    try {
-      const base64Pdf = pdfBuffer.toString("base64");
-      const fallbackResponse = await generateContentWithRetry(ai as any, {
-        model: "gemini-3.6-flash",
-        contents: [
-          {
-            inlineData: {
-              data: base64Pdf,
-              mimeType: "application/pdf",
-            },
-          },
-          "Resuma apenas em JSON estrito: numero_processo, autor, réu, vara, e observacoes_para_conferencia_humana.",
-        ],
-      });
-
-      const cleanedText = cleanJsonResponse(
-        fallbackResponse.text || fallbackResponse.response?.text() || ""
-      );
-      return JSON.parse(cleanedText) as ProcessoTriagemResult;
-    } catch (fallbackError: any) {
-      throw new Error(
-        `O limite de tokens/cota foi atingido na API do Google Gemini. Aguarde 1 minuto e tente novamente ou divida o PDF.`
-      );
-    }
+    throw new Error(
+      "O limite de cota de processamento do Google Gemini foi excedido para este volume de dados (775 páginas). " +
+      "Por favor, vincule uma conta Billing no Google AI Studio ou envie um PDF contendo apenas as peças principais (Petição Inicial e Sentença)."
+    );
   }
 }
 
-/**
- * 2. Extração de Extrato Bancário
- */
 export async function extractExtratoBancario(
   fileInput: Buffer | string,
   mimeType: string = "application/pdf"
@@ -152,11 +127,9 @@ export async function extractExtratoBancario(
 
   try {
     const base64Data =
-      typeof fileInput === "string"
-        ? fileInput
-        : fileInput.toString("base64");
+      typeof fileInput === "string" ? fileInput : fileInput.toString("base64");
 
-    const response = await generateContentWithRetry(ai as any, {
+    const response = await generateWithBackoff(ai as any, {
       model: modelName,
       contents: [
         {
@@ -165,7 +138,7 @@ export async function extractExtratoBancario(
             mimeType: mimeType,
           },
         },
-        `Extraia as movimentações financeiras do extrato bancário em formato JSON estrito:
+        `Extraia as movimentações financeiras em formato JSON estrito:
         {
           "banco": "string",
           "conta": "string",
@@ -182,23 +155,20 @@ export async function extractExtratoBancario(
     const cleanedText = cleanJsonResponse(response.text || response.response?.text() || "");
     return JSON.parse(cleanedText);
   } catch (error: any) {
-    console.error("Erro no extractExtratoBancario:", error);
+    console.error("Erro em extractExtratoBancario:", error);
     throw new Error(`Falha ao extrair extrato: ${error?.message || error}`);
   }
 }
 
-/**
- * 3. Geração de Minuta / Laudo Pericial
- */
 export async function generateLaudoMinuta(data: any): Promise<any> {
   const ai = getGeminiClient();
-  const modelName = MODELS.PRO || "gemini-3.6-flash";
+  const modelName = MODELS.FLASH || "gemini-3.6-flash";
 
   try {
-    const response = await generateContentWithRetry(ai as any, {
+    const response = await generateWithBackoff(ai as any, {
       model: modelName,
       contents: [
-        `Com base nos dados periciais fornecidos abaixo, elabore a minuta do laudo pericial em formato JSON estrito:
+        `Com base nos dados periciais, elabore a minuta do laudo pericial em JSON estrito:
         ${JSON.stringify(data)}
         
         Retorne:
@@ -214,7 +184,7 @@ export async function generateLaudoMinuta(data: any): Promise<any> {
     const cleanedText = cleanJsonResponse(response.text || response.response?.text() || "");
     return JSON.parse(cleanedText);
   } catch (error: any) {
-    console.error("Erro no generateLaudoMinuta:", error);
+    console.error("Erro em generateLaudoMinuta:", error);
     throw new Error(`Falha ao gerar minuta: ${error?.message || error}`);
   }
 }
