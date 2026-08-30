@@ -2,17 +2,16 @@
 
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { extrairTextoDoPdfClient } from "@/lib/pdf-reader";
 import type { TokenPreviewInfo } from "@/lib/types";
 
 interface FileUploaderProps {
   caseId: string;
   fileType: "processo_pdf" | "extrato_pdf" | "planilha_excel";
-  onUploaded: (documentId: string, tokenPreview?: TokenPreviewInfo) => void;
+  // Atualizado: passa o objeto 'file' de tipo File e o texto extraído
+  onUploaded: (file: File, textoExtraido?: string, tokenPreview?: TokenPreviewInfo) => void;
   accept?: string;
   label: string;
-  /** Se true, chama /api/gemini/count-tokens após o upload e mostra a
-   *  prévia de capacidade antes de liberar o próximo passo. Usar para
-   *  documentos que vão para extração via Gemini (processo_pdf). */
   showTokenPreview?: boolean;
 }
 
@@ -22,14 +21,6 @@ const STATUS_STYLES: Record<TokenPreviewInfo["status"], { bar: string; text: str
   critico: { bar: "bg-seal-red", text: "text-seal-red", bg: "bg-seal-red/5 border-seal-red/30" },
 };
 
-/**
- * Faz upload do arquivo para o bucket privado "case-files" e cria o registro
- * correspondente em case_documents. Quando showTokenPreview está ativo,
- * também chama a rota leve de contagem de tokens e:
- *   - exibe uma barra de capacidade da janela de contexto do modelo;
- *   - se o arquivo exigir o modo de Análise por Camadas, mostra um modal
- *     explicativo e só libera o próximo passo após confirmação do usuário.
- */
 export function FileUploader({
   caseId,
   fileType,
@@ -44,7 +35,8 @@ export function FileUploader({
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [preview, setPreview] = useState<TokenPreviewInfo | null>(null);
-  const [pendingDocumentId, setPendingDocumentId] = useState<string | null>(null);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pendingTexto, setPendingTexto] = useState<string | null>(null);
   const [showChunkingModal, setShowChunkingModal] = useState(false);
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -57,52 +49,58 @@ export function FileUploader({
     setPreview(null);
 
     try {
+      // 1. Salva o arquivo no Supabase normalmente em segundo plano
       const path = `${caseId}/${fileType}/${Date.now()}-${file.name}`;
-
       const { error: uploadError } = await supabase.storage
         .from("case-files")
         .upload(path, file, { upsert: false });
       if (uploadError) throw uploadError;
 
-      const { data: document, error: insertError } = await supabase
-        .from("case_documents")
-        .insert({
-          case_id: caseId,
-          file_name: file.name,
-          file_path: path,
-          file_type: fileType,
-        })
-        .select()
-        .single();
-      if (insertError || !document) throw insertError;
+      await supabase.from("case_documents").insert({
+        case_id: caseId,
+        file_name: file.name,
+        file_path: path,
+        file_type: fileType,
+      });
 
       if (!showTokenPreview) {
-        onUploaded(document.id);
+        onUploaded(file);
         return;
       }
 
-      // Prévia de consumo de tokens ANTES de liberar a extração completa.
+      // 2. Extração rápida de tokens direto no Navegador (sem timeout de servidor)
       setUploading(false);
       setCountingTokens(true);
 
-      const res = await fetch("/api/gemini/count-tokens", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ documentId: document.id }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error);
+      const { textoCompleto, totalPaginas, totalTokensEstimados } =
+        await extrairTextoDoPdfClient(file);
 
-      const tokenPreview: TokenPreviewInfo = json.preview;
+      const MODEL_LIMIT = 1000000; // Limite padrão do Gemini
+      const percentualOcupado = (totalTokensEstimados / MODEL_LIMIT) * 100;
+      const exigeChunking = totalTokensEstimados > 300000 || totalPaginas > 100;
+
+      let status: TokenPreviewInfo["status"] = "ok";
+      if (percentualOcupado > 50) status = "atencao";
+      if (percentualOcupado > 80 || exigeChunking) status = "critico";
+
+      const tokenPreview: TokenPreviewInfo = {
+        totalTokens: totalTokensEstimados,
+        totalPaginas,
+        modelLimit: MODEL_LIMIT,
+        percentualOcupado,
+        exigeChunking,
+        status,
+        estimado: true,
+      };
+
       setPreview(tokenPreview);
-      setPendingDocumentId(document.id);
+      setPendingFile(file);
+      setPendingTexto(textoCompleto);
 
       if (tokenPreview.exigeChunking) {
-        // Documento extenso detectado — bloqueia o envio direto e pede
-        // confirmação explícita do usuário antes de rodar o modo em camadas.
         setShowChunkingModal(true);
       } else {
-        onUploaded(document.id, tokenPreview);
+        onUploaded(file, textoCompleto, tokenPreview);
       }
     } catch (err: any) {
       setError(err?.message || "Falha no upload. Tente novamente.");
@@ -113,9 +111,9 @@ export function FileUploader({
   }
 
   function confirmarProcessamentoEmCamadas() {
-    if (!pendingDocumentId || !preview) return;
+    if (!pendingFile || !pendingTexto || !preview) return;
     setShowChunkingModal(false);
-    onUploaded(pendingDocumentId, preview);
+    onUploaded(pendingFile, pendingTexto, preview);
   }
 
   const statusStyle = preview ? STATUS_STYLES[preview.status] : null;
@@ -126,9 +124,9 @@ export function FileUploader({
         <span className="block font-display text-sm text-ink-700">{label}</span>
         <span className="mt-1 block text-xs text-ink-500">
           {uploading
-            ? "Enviando…"
+            ? "Enviando arquivo..."
             : countingTokens
-            ? "Estimando consumo de tokens…"
+            ? "Lendo PDF e calculando tokens no navegador..."
             : fileName ?? "Clique para selecionar o arquivo"}
         </span>
         <input
@@ -146,7 +144,7 @@ export function FileUploader({
         <div className={`mt-4 rounded border p-3 ${statusStyle.bg}`}>
           <div className="flex items-center justify-between text-xs">
             <span className="font-medium text-ink-700">
-              {preview.totalTokens.toLocaleString("pt-BR")} tokens {preview.estimado ? "(estimativa)" : "(contagem real)"}
+              {preview.totalTokens.toLocaleString("pt-BR")} tokens (estimativa local)
               {preview.totalPaginas ? ` · ${preview.totalPaginas} páginas` : ""}
             </span>
             <span className={`font-medium ${statusStyle.text}`}>
@@ -164,10 +162,6 @@ export function FileUploader({
           <p className="mt-2 text-[11px] text-ink-500">
             Limite da janela do modelo: {preview.modelLimit.toLocaleString("pt-BR")} tokens.
             {preview.exigeChunking && " Este documento será processado em camadas (chunking)."}
-          </p>
-          <p className="mt-1 text-[11px] text-ink-500">
-            Extração de texto puro acionada — carimbos, assinaturas e margens não são enviados como
-            imagem, o que preserva a exatidão dos números para o recálculo.
           </p>
         </div>
       )}
@@ -197,14 +191,11 @@ function ChunkingModal({
         <p className="mt-3 text-sm text-ink-700">
           Este arquivo tem aproximadamente{" "}
           <strong className="tabular-figures">{preview.totalTokens.toLocaleString("pt-BR")}</strong>{" "}
-          tokens ({preview.percentualOcupado.toFixed(1)}% da janela de contexto do modelo), acima do
-          limite seguro para análise em uma única chamada.
+          tokens ({preview.totalPaginas} páginas), acima do limite para uma única análise.
         </p>
         <p className="mt-2 text-sm text-ink-700">
-          O sistema ativará o <strong>modo de Análise por Camadas (Chunking)</strong>: o processo será
-          dividido em blocos (ex.: petição/cálculos, contestação/despachos, sentença/decisão),
-          cada bloco será analisado separadamente e os resultados serão consolidados
-          automaticamente ao final.
+          O sistema ativará o <strong>modo de Análise por Camadas (Chunking)</strong>: o texto extraído
+          será enviado diretamente para análise da IA de forma otimizada.
         </p>
 
         <button

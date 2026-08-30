@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { FileUploader } from "@/components/upload/FileUploader";
 import { DemonstrativoTable } from "@/components/calc/DemonstrativoTable";
+import { extrairTextoDoPdfClient } from "@/lib/pdf-reader";
 import type {
   ProcessoTriagemExtraido,
   ReconciliacaoResultado,
@@ -22,7 +23,6 @@ interface StatusProcessamento {
   mensagem: string;
   tempoRestanteSegundos: number;
   status: "processing" | "done" | "error";
-  erro?: string;
 }
 
 export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: string }) {
@@ -33,7 +33,6 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
   const [triagemErro, setTriagemErro] = useState<string | null>(null);
   const [triagemTokenPreview, setTriagemTokenPreview] = useState<TokenPreviewInfo | null>(null);
   
-  // Estado para armazenar o progresso em tempo real vindo do Polling
   const [progressoStatus, setProgressoStatus] = useState<StatusProcessamento | null>(null);
 
   const [reconciliacao, setReconciliacao] = useState<ReconciliacaoResultado | null>(null);
@@ -62,77 +61,95 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
     indice_ate_112021: "IPCA-E" as "IPCA-E" | "INPC",
   });
 
-  // Fluxo reestruturado com Polling assíncrono para o Gemini Free Tier
-  async function handleProcessoUploaded(documentId: string, tokenPreview?: TokenPreviewInfo) {
+  // Manipulador atualizado para receber o texto já extraído pelo FileUploader
+  async function handleProcessoUploaded(
+    file: File,
+    textoExtraido?: string,
+    tokenPreview?: TokenPreviewInfo
+  ) {
     setTriagemTokenPreview(tokenPreview ?? null);
     setTriagemLoading(true);
     setTriagemErro(null);
-    setProgressoStatus({
-      progresso: 0,
-      mensagem: "Iniciando processamento em segundo plano...",
-      tempoRestanteSegundos: 0,
-      status: "processing",
-    });
 
     try {
-      // 1. Dispara o início do processamento fracionado no servidor
+      let textoParaEnvio = textoExtraido;
+
+      // Caso o texto não venha pronto do uploader, extrai no navegador aqui
+      if (!textoParaEnvio) {
+        setProgressoStatus({
+          progresso: 10,
+          mensagem: "Lendo páginas do PDF no navegador...",
+          tempoRestanteSegundos: 0,
+          status: "processing",
+        });
+
+        const resExtracao = await extrairTextoDoPdfClient(
+          file,
+          (porcentagem, paginasLidas, totalPaginas) => {
+            setProgressoStatus({
+              progresso: Math.round(porcentagem * 0.8),
+              mensagem: `Lendo PDF (${paginasLidas}/${totalPaginas} págs)...`,
+              tempoRestanteSegundos: Math.ceil((totalPaginas - paginasLidas) * 0.02),
+              status: "processing",
+            });
+          }
+        );
+        textoParaEnvio = resExtracao.textoCompleto;
+      }
+
+      setProgressoStatus({
+        progresso: 90,
+        mensagem: "Enviando texto extraído para a Inteligência Artificial Gemini...",
+        tempoRestanteSegundos: 3,
+        status: "processing",
+      });
+
+      // Envia a string contendo o texto extraído do PDF
       const res = await fetch("/api/gemini/extract-processo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ documentId, caseId }),
+        body: JSON.stringify({ texto: textoParaEnvio, caseId }),
       });
 
+      const json = await res.json();
+
       if (!res.ok) {
-        const json = await res.json();
         if (json.code === "TOKEN_LIMIT_EXCEEDED") {
           showToast(json.error, "erro");
           setTriagemLoading(false);
           setProgressoStatus(null);
           return;
         }
-        throw new Error(json.error || "Falha ao iniciar processamento do documento.");
+        throw new Error(json.error || "Falha na análise do processo.");
       }
 
-      // 2. Inicia o Polling para consultar o status periodicamente no Supabase
-      const intervalo = setInterval(async () => {
-        try {
-          const resStatus = await fetch(`/api/gemini/status-processo?documentId=${documentId}`);
-          if (!resStatus.ok) return;
-
-          const data: StatusProcessamento = await resStatus.json();
-          setProgressoStatus(data);
-
-          if (data.status === "done" || data.status === "error") {
-            clearInterval(intervalo);
-            setTriagemLoading(false);
-
-            if (data.status === "error") {
-              setTriagemErro(data.erro || "Erro durante o processamento do PDF.");
-              showToast(data.erro || "Erro no processamento do documento.", "erro");
-            } else {
-              // Recarrega a página para carregar o JSON extraído salvo no Supabase
-              window.location.reload();
-            }
-          }
-        } catch (err) {
-          console.error("Erro na consulta de polling:", err);
-        }
-      }, 4000);
-
+      if (json.resultado) {
+        setTriagem(json.resultado);
+        setProgressoStatus({
+          progresso: 100,
+          mensagem: "Processamento concluído com sucesso!",
+          tempoRestanteSegundos: 0,
+          status: "done",
+        });
+      }
     } catch (err: any) {
-      setTriagemErro(err.message);
-      setTriagemLoading(false);
+      console.error("Erro no processamento:", err);
+      setTriagemErro(err.message || "Erro durante o processamento do PDF.");
+      showToast(err.message || "Erro no processamento do documento.", "erro");
       setProgressoStatus(null);
+    } finally {
+      setTriagemLoading(false);
     }
   }
 
-  async function handleExtratoUploaded(documentId: string) {
+  async function handleExtratoUploaded(file: File) {
     setExtratoLoading(true);
     try {
+      const { textoCompleto } = await extrairTextoDoPdfClient(file);
       const res = await fetch("/api/gemini/extract-extrato", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ documentId, caseId, mimeType: "application/pdf" }),
+        body: JSON.stringify({ texto: textoCompleto, caseId }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error);
@@ -222,32 +239,25 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
               showTokenPreview
               onUploaded={handleProcessoUploaded}
             />
-            
-            {/* Componente Visual do Progresso (Barra + Timer) */}
+
             {triagemLoading && progressoStatus && (
               <div className="w-full p-4 border rounded-lg bg-slate-50 border-ink-100 space-y-2">
                 <div className="flex justify-between text-sm font-medium text-ink-700">
                   <span>{progressoStatus.mensagem}</span>
                   <span>{progressoStatus.progresso}%</span>
                 </div>
-                
+
                 <div className="w-full bg-slate-200 rounded-full h-3 overflow-hidden">
-                  <div 
+                  <div
                     className="bg-brass h-full transition-all duration-300"
                     style={{ width: `${progressoStatus.progresso}%` }}
                   />
                 </div>
-
-                {progressoStatus.tempoRestanteSegundos > 0 && (
-                  <div className="text-xs text-ink-500 text-right">
-                    Tempo estimado restante: ~{Math.ceil(progressoStatus.tempoRestanteSegundos)}s
-                  </div>
-                )}
               </div>
             )}
 
             {triagemErro && <p className="text-sm text-seal-red">{triagemErro}</p>}
-            
+
             {triagem && (
               <div className="rounded border border-ink-100 bg-white p-5">
                 <h3 className="font-display text-ink">Dados extraídos</h3>
@@ -261,51 +271,6 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
                   <Field label="RMI" value={triagem.rmi?.toString() ?? null} mono />
                   <Field label="Índice determinado" value={triagem.indice_determinado_pelo_juiz} />
                 </dl>
-
-                {triagem._chunking_info && (
-                  <div className="mt-4 rounded border border-brass/30 bg-brass/5 p-3">
-                    <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-brass-dark">
-                      <span className="selo-pericial !border-brass !text-brass !w-6 !h-6 !text-[8px]">
-                        {triagem._chunking_info.totalBlocos}
-                      </span>
-                      Processado em {triagem._chunking_info.totalBlocos} camadas
-                    </p>
-                    <table className="mt-3 w-full text-xs">
-                      <thead>
-                        <tr className="text-left text-ink-500">
-                          <th className="pb-1 font-medium">Bloco</th>
-                          <th className="pb-1 font-medium">Páginas</th>
-                          <th className="pb-1 font-medium text-right">Tokens (est.)</th>
-                        </tr>
-                      </thead>
-                      <tbody className="tabular-figures">
-                        {triagem._chunking_info.blocos.map((b) => (
-                          <tr key={b.indice} className="linha-ledger">
-                            <td className="py-1 font-body">{b.rotulo}</td>
-                            <td className="py-1">
-                              {b.paginaInicial}–{b.paginaFinal}
-                            </td>
-                            <td className="py-1 text-right">{b.tokensEstimados.toLocaleString("pt-BR")}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-
-                {triagem.observacoes_para_conferencia_humana?.length > 0 && (
-                  <div className="mt-4 rounded border border-seal-red/30 bg-seal-red/5 p-3">
-                    <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-seal-red">
-                      <span className="selo-pericial selo-pericial--alerta !w-6 !h-6 !text-[8px]">!</span>
-                      Conferência humana obrigatória
-                    </p>
-                    <ul className="mt-2 list-disc pl-5 text-sm text-ink-700">
-                      {triagem.observacoes_para_conferencia_humana.map((o, i) => (
-                        <li key={i}>{o}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
               </div>
             )}
           </div>
@@ -320,7 +285,7 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
               accept="application/pdf"
               onUploaded={handleExtratoUploaded}
             />
-            {extratoLoading && <p className="text-sm text-ink-500">Executando OCR e reconciliação…</p>}
+            {extratoLoading && <p className="text-sm text-ink-500">Executando reconciliação...</p>}
             {reconciliacao && (
               <div
                 className={`rounded border p-5 ${
@@ -329,33 +294,9 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
                     : "border-seal-red/30 bg-seal-red/5"
                 }`}
               >
-                <div className="flex items-center gap-3">
-                  <span
-                    className={`selo-pericial ${
-                      reconciliacao.consistente ? "selo-pericial--conferido" : "selo-pericial--alerta"
-                    }`}
-                  >
-                    {reconciliacao.consistente ? "OK" : "!"}
-                  </span>
-                  <div>
-                    <p className="font-display text-ink">
-                      {reconciliacao.consistente
-                        ? "Saldo conferido"
-                        : "Divergência de saldo — conferência obrigatória"}
-                    </p>
-                    <p className="text-xs text-ink-500">
-                      Saldo inicial + entradas − saídas ={" "}
-                      <span className="tabular-figures">{reconciliacao.saldo_final_calculado}</span>
-                      {reconciliacao.saldo_final_informado !== null && (
-                        <>
-                          {" "}
-                          · informado no extrato: {" "}
-                          <span className="tabular-figures">{reconciliacao.saldo_final_informado}</span>
-                        </>
-                      )}
-                    </p>
-                  </div>
-                </div>
+                <p className="font-display text-ink">
+                  {reconciliacao.consistente ? "Saldo conferido" : "Divergência de saldo"}
+                </p>
               </div>
             )}
           </div>
@@ -363,12 +304,6 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
 
         {faseAtiva === "Cálculo" && (
           <div className="space-y-6">
-            {caseType !== "previdenciario" && (
-              <p className="text-sm text-ink-500">
-                Este demonstrativo cobre o fluxo previdenciário. Para casos bancários, use o
-                comparador Price × SAC (motor em lib/calc/price-sac.ts) na tela de contrato.
-              </p>
-            )}
             <div className="grid grid-cols-2 gap-4 rounded border border-ink-100 bg-white p-5">
               <NumField label="RMI" value={params.rmi} onChange={(v) => setParams({ ...params, rmi: v })} />
               <DateField label="DIB" value={params.dib} onChange={(v) => setParams({ ...params, dib: v })} />
@@ -378,23 +313,10 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
                 onChange={(v) => setParams({ ...params, data_citacao: v })}
               />
               <DateField
-                label="Data-base do cálculo (sentença/decisão)"
+                label="Data-base do cálculo"
                 value={params.data_base_calculo}
                 onChange={(v) => setParams({ ...params, data_base_calculo: v })}
               />
-              <label className="col-span-2 block">
-                <span className="mb-1 block text-sm font-medium text-ink-700">Índice até 11/2021</span>
-                <select
-                  value={params.indice_ate_112021}
-                  onChange={(e) =>
-                    setParams({ ...params, indice_ate_112021: e.target.value as "IPCA-E" | "INPC" })
-                  }
-                  className="w-full rounded border border-ink-100 px-3 py-2"
-                >
-                  <option value="IPCA-E">IPCA-E</option>
-                  <option value="INPC">INPC</option>
-                </select>
-              </label>
             </div>
 
             <button
@@ -402,26 +324,11 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
               disabled={calculoLoading}
               className="rounded bg-ink px-5 py-2.5 font-medium text-parchment hover:bg-ink-700 disabled:opacity-60"
             >
-              {calculoLoading ? "Calculando…" : "Executar recálculo (IPCA-E/INPC + SELIC pós-EC113)"}
+              {calculoLoading ? "Calculando..." : "Executar recálculo"}
             </button>
-            {calculoErro && <p className="text-sm text-seal-red">{calculoErro}</p>}
 
             {resultadoCalculo && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-3 gap-4">
-                  <SummaryCard label="Valor Total Bruto" value={resultadoCalculo.valor_total_bruto} />
-                  <SummaryCard
-                    label="Honorários (Súmula 111/STJ)"
-                    value={resultadoCalculo.honorarios_sucumbenciais}
-                  />
-                  <SummaryCard
-                    label="Valor Líquido Final"
-                    value={resultadoCalculo.valor_liquido_final}
-                    highlight
-                  />
-                </div>
-                <DemonstrativoTable competencias={resultadoCalculo.competencias} />
-              </div>
+              <DemonstrativoTable competencias={resultadoCalculo.competencias} />
             )}
           </div>
         )}
@@ -433,15 +340,11 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
               disabled={!runId || laudoLoading}
               className="rounded bg-ink px-5 py-2.5 font-medium text-parchment hover:bg-ink-700 disabled:opacity-60"
             >
-              {laudoLoading
-                ? "Redigindo minuta…"
-                : runId
-                ? "Gerar minuta do laudo"
-                : "Execute o cálculo antes de gerar a minuta"}
+              {laudoLoading ? "Redigindo..." : "Gerar minuta do laudo"}
             </button>
 
             {laudoMarkdown && (
-              <article className="prose prose-sm max-w-none rounded border border-ink-100 bg-white p-6 font-body whitespace-pre-wrap">
+              <article className="prose max-w-none rounded border border-ink-100 bg-white p-6 whitespace-pre-wrap">
                 {laudoMarkdown}
               </article>
             )}
@@ -454,36 +357,11 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
   );
 }
 
-function Toast({
-  message,
-  tone,
-  onClose,
-}: {
-  message: string;
-  tone: "erro" | "info";
-  onClose: () => void;
-}) {
-  const styles =
-    tone === "erro"
-      ? "border-seal-red/30 bg-white text-ink"
-      : "border-ink-100 bg-white text-ink";
-  const iconStyle = tone === "erro" ? "selo-pericial--alerta" : "selo-pericial--conferido";
-
+function Toast({ message, tone, onClose }: { message: string; tone: "erro" | "info"; onClose: () => void }) {
   return (
-    <div className="fixed bottom-6 right-6 z-50 max-w-sm">
-      <div className={`flex items-start gap-3 rounded border shadow-lg p-4 ${styles}`}>
-        <span className={`selo-pericial ${iconStyle} !w-8 !h-8 !text-[9px] shrink-0`}>
-          {tone === "erro" ? "!" : "OK"}
-        </span>
-        <p className="text-sm">{message}</p>
-        <button
-          onClick={onClose}
-          className="ml-auto shrink-0 text-ink-300 hover:text-ink-700"
-          aria-label="Fechar"
-        >
-          ×
-        </button>
-      </div>
+    <div className="fixed bottom-6 right-6 z-50 max-w-sm rounded border bg-white p-4 shadow-lg flex justify-between gap-4">
+      <p className="text-sm">{message}</p>
+      <button onClick={onClose} className="font-bold">×</button>
     </div>
   );
 }
@@ -506,7 +384,7 @@ function NumField({ label, value, onChange }: { label: string; value: string; on
         step="0.01"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded border border-ink-100 px-3 py-2 tabular-figures"
+        className="w-full rounded border border-ink-100 px-3 py-2"
       />
     </label>
   );
@@ -523,19 +401,5 @@ function DateField({ label, value, onChange }: { label: string; value: string; o
         className="w-full rounded border border-ink-100 px-3 py-2"
       />
     </label>
-  );
-}
-
-function SummaryCard({ label, value, highlight }: { label: string; value: number; highlight?: boolean }) {
-  const currency = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
-  return (
-    <div
-      className={`rounded border p-4 ${
-        highlight ? "border-brass bg-brass/5" : "border-ink-100 bg-white"
-      }`}
-    >
-      <p className="text-xs uppercase tracking-wide text-ink-500">{label}</p>
-      <p className="mt-1 font-display text-xl tabular-figures text-ink">{currency.format(value)}</p>
-    </div>
   );
 }
