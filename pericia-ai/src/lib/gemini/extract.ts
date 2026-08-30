@@ -8,6 +8,7 @@ export interface ProgressoProcessamento {
   progresso?: number;
   mensagem?: string;
   tempoRestanteSegundos?: number;
+  estimativa_segundos?: number;
   status?: "processing" | "done" | "error";
   total_blocos?: number;
   blocos_concluidos?: number;
