@@ -27,9 +27,8 @@ export async function processarTextoProcesso(
     throw new Error("A chave GEMINI_API_KEY não está configurada.");
   }
 
-  // Utilizando a nomenclatura estável da API oficial
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json" },
   });
 
