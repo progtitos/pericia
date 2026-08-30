@@ -14,6 +14,7 @@ export type OnProgressCallback = (
 export interface PDFExtractionResult {
   textoCompleto: string;
   totalPaginas: number;
+  totalTokensEstimados: number;
 }
 
 export async function extractTextFromPDF(
@@ -39,9 +40,13 @@ export async function extractTextFromPDF(
     }
   }
 
+  // Estimativa de tokens (aproximadamente 1 token para cada 4 caracteres)
+  const totalTokensEstimados = Math.ceil(fullText.length / 4);
+
   return {
     textoCompleto: fullText,
     totalPaginas,
+    totalTokensEstimados,
   };
 }
 
