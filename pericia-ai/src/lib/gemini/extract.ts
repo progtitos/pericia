@@ -1,10 +1,10 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-// Função para obter o modelo de forma lazy (evita erro durante o build)
-function getGeminiModel(modelName = "gemini-1.5-flash") {
-  const apiKey = process.env.GEMINI_API_KEY;
+// Inicialização Lazy do modelo Gemini (utiliza a família mais recente 2.5/2.0)
+function getGeminiModel(modelName = "gemini-2.5-flash") {
+  const apiKey = process.env.GOOGLE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error("A variável de ambiente GEMINI_API_KEY não está definida.");
+    throw new Error("A variável de ambiente GOOGLE_GEMINI_API_KEY ou GEMINI_API_KEY não está definida.");
   }
   const genAI = new GoogleGenerativeAI(apiKey);
   return genAI.getGenerativeModel({ model: modelName });
@@ -88,7 +88,7 @@ export async function processarExtracaoProcessoFreeTier(
     onProgress?: (progresso: ProgressoProcessamento) => Promise<void>;
   }
 ): Promise<any> {
-  const model = getGeminiModel("gemini-1.5-flash");
+  const model = getGeminiModel("gemini-2.5-flash");
   const textoCompleto = bufferPdf.toString("utf-8");
 
   const blocos = dividirTextoEmBlocos(textoCompleto, 180000);
@@ -166,7 +166,7 @@ export async function extractExtratoBancario(
   fileBase64: string,
   mimeType: string = "application/pdf"
 ): Promise<any> {
-  const model = getGeminiModel("gemini-1.5-flash");
+  const model = getGeminiModel("gemini-2.5-flash");
 
   const prompt = `
   Extraia os dados deste extrato bancário em formato JSON.
@@ -202,7 +202,7 @@ export async function generateLaudoMinuta(
   paramsOrDados: any,
   calculos?: any
 ): Promise<string> {
-  const model = getGeminiModel("gemini-1.5-flash");
+  const model = getGeminiModel("gemini-2.5-flash");
 
   let dadosPrompt = "";
   if (calculos !== undefined) {
