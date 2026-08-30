@@ -17,6 +17,14 @@ interface ToastState {
   tone: "erro" | "info";
 }
 
+interface StatusProcessamento {
+  progresso: number;
+  mensagem: string;
+  tempoRestanteSegundos: number;
+  status: "processing" | "done" | "error";
+  erro?: string;
+}
+
 export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: string }) {
   const [faseAtiva, setFaseAtiva] = useState<(typeof FASES)[number]>("Triagem");
 
@@ -24,6 +32,9 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
   const [triagemLoading, setTriagemLoading] = useState(false);
   const [triagemErro, setTriagemErro] = useState<string | null>(null);
   const [triagemTokenPreview, setTriagemTokenPreview] = useState<TokenPreviewInfo | null>(null);
+  
+  // Estado para armazenar o progresso em tempo real vindo do Polling
+  const [progressoStatus, setProgressoStatus] = useState<StatusProcessamento | null>(null);
 
   const [reconciliacao, setReconciliacao] = useState<ReconciliacaoResultado | null>(null);
   const [extratoLoading, setExtratoLoading] = useState(false);
@@ -43,7 +54,6 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
     setTimeout(() => setToast(null), 7000);
   }
 
-  // Parâmetros mínimos do cálculo previdenciário (viriam pré-preenchidos da triagem).
   const [params, setParams] = useState({
     rmi: "",
     dib: "",
@@ -52,37 +62,67 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
     indice_ate_112021: "IPCA-E" as "IPCA-E" | "INPC",
   });
 
+  // Fluxo reestruturado com Polling assíncrono para o Gemini Free Tier
   async function handleProcessoUploaded(documentId: string, tokenPreview?: TokenPreviewInfo) {
     setTriagemTokenPreview(tokenPreview ?? null);
     setTriagemLoading(true);
     setTriagemErro(null);
+    setProgressoStatus({
+      progresso: 0,
+      mensagem: "Iniciando processamento em segundo plano...",
+      tempoRestanteSegundos: 0,
+      status: "processing",
+    });
+
     try {
+      // 1. Dispara o início do processamento fracionado no servidor
       const res = await fetch("/api/gemini/extract-processo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ documentId, caseId }),
       });
-      const json = await res.json();
+
       if (!res.ok) {
-        // Erro de excedimento de tokens: mostra como Toast estilizado em vez
-        // de mensagem inline, conforme o tratamento elegante de erro pedido.
+        const json = await res.json();
         if (json.code === "TOKEN_LIMIT_EXCEEDED") {
           showToast(json.error, "erro");
+          setTriagemLoading(false);
+          setProgressoStatus(null);
           return;
         }
-        throw new Error(json.error);
+        throw new Error(json.error || "Falha ao iniciar processamento do documento.");
       }
-      setTriagem(json.data);
-      setParams((p) => ({
-        ...p,
-        rmi: json.data.rmi?.toString() ?? "",
-        dib: json.data.dib ?? "",
-        data_citacao: json.data.data_citacao ?? "",
-      }));
+
+      // 2. Inicia o Polling para consultar o status periodicamente no Supabase
+      const intervalo = setInterval(async () => {
+        try {
+          const resStatus = await fetch(`/api/gemini/status-processo?documentId=${documentId}`);
+          if (!resStatus.ok) return;
+
+          const data: StatusProcessamento = await resStatus.json();
+          setProgressoStatus(data);
+
+          if (data.status === "done" || data.status === "error") {
+            clearInterval(intervalo);
+            setTriagemLoading(false);
+
+            if (data.status === "error") {
+              setTriagemErro(data.erro || "Erro durante o processamento do PDF.");
+              showToast(data.erro || "Erro no processamento do documento.", "erro");
+            } else {
+              // Recarrega a página para carregar o JSON extraído salvo no Supabase
+              window.location.reload();
+            }
+          }
+        } catch (err) {
+          console.error("Erro na consulta de polling:", err);
+        }
+      }, 4000);
+
     } catch (err: any) {
       setTriagemErro(err.message);
-    } finally {
       setTriagemLoading(false);
+      setProgressoStatus(null);
     }
   }
 
@@ -182,14 +222,32 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
               showTokenPreview
               onUploaded={handleProcessoUploaded}
             />
-            {triagemLoading && (
-              <p className="text-sm text-ink-500">
-                {triagemTokenPreview?.exigeChunking
-                  ? "Processando em modo de Análise por Camadas — isso pode levar alguns minutos para documentos extensos…"
-                  : "Analisando processo com IA…"}
-              </p>
+            
+            {/* Componente Visual do Progresso (Barra + Timer) */}
+            {triagemLoading && progressoStatus && (
+              <div className="w-full p-4 border rounded-lg bg-slate-50 border-ink-100 space-y-2">
+                <div className="flex justify-between text-sm font-medium text-ink-700">
+                  <span>{progressoStatus.mensagem}</span>
+                  <span>{progressoStatus.progresso}%</span>
+                </div>
+                
+                <div className="w-full bg-slate-200 rounded-full h-3 overflow-hidden">
+                  <div 
+                    className="bg-brass h-full transition-all duration-300"
+                    style={{ width: `${progressoStatus.progresso}%` }}
+                  />
+                </div>
+
+                {progressoStatus.tempoRestanteSegundos > 0 && (
+                  <div className="text-xs text-ink-500 text-right">
+                    Tempo estimado restante: ~{Math.ceil(progressoStatus.tempoRestanteSegundos)}s
+                  </div>
+                )}
+              </div>
             )}
+
             {triagemErro && <p className="text-sm text-seal-red">{triagemErro}</p>}
+            
             {triagem && (
               <div className="rounded border border-ink-100 bg-white p-5">
                 <h3 className="font-display text-ink">Dados extraídos</h3>
@@ -286,7 +344,7 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
                         : "Divergência de saldo — conferência obrigatória"}
                     </p>
                     <p className="text-xs text-ink-500">
-                      Saldo inicial + entradas − saídas = {" "}
+                      Saldo inicial + entradas − saídas ={" "}
                       <span className="tabular-figures">{reconciliacao.saldo_final_calculado}</span>
                       {reconciliacao.saldo_final_informado !== null && (
                         <>
