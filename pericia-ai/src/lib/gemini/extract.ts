@@ -1,8 +1,5 @@
 import { getGeminiClient, MODELS } from "./client";
 
-/**
- * Interfaces dos dados extraídos do processo, extrato e laudo.
- */
 export interface ProcessoTriagemResult {
   numero_processo?: string;
   autor?: string;
@@ -27,9 +24,6 @@ export interface ProcessoTriagemResult {
   _chunking_info?: any;
 }
 
-/**
- * Função utilitária para limpar blocos de código Markdown retornados pela API.
- */
 function cleanJsonResponse(rawText: string): string {
   return rawText
     .replace(/^```json\s*/i, "")
@@ -39,7 +33,7 @@ function cleanJsonResponse(rawText: string): string {
 }
 
 /**
- * 1. Extração do Processo para Triagem
+ * Extração do Processo para Triagem (utilizando gemini-2.5-flash / gemini-2.5-pro)
  */
 export async function extractProcessoTriagem(
   pdfBuffer: Buffer
@@ -49,8 +43,7 @@ export async function extractProcessoTriagem(
 
   try {
     const base64Pdf = pdfBuffer.toString("base64");
-    
-    // Utiliza a sintaxe da nova SDK @google/genai
+
     const response = await (ai as any).models.generateContent({
       model: modelName,
       contents: [
@@ -89,12 +82,37 @@ export async function extractProcessoTriagem(
     return JSON.parse(cleanedText) as ProcessoTriagemResult;
   } catch (error: any) {
     console.error("Erro no extractProcessoTriagem:", error);
-    throw new Error(`Falha ao extrair dados do processo: ${error?.message || error}`);
+
+    // Fallback garantido usando gemini-2.5-flash se houver falha no modelo principal
+    try {
+      const base64Pdf = pdfBuffer.toString("base64");
+      const fallbackResponse = await (ai as any).models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [
+          {
+            inlineData: {
+              data: base64Pdf,
+              mimeType: "application/pdf",
+            },
+          },
+          "Extraia um JSON com numero_processo, autor, réu, vara e observacoes_para_conferencia_humana do PDF.",
+        ],
+      });
+
+      const cleanedText = cleanJsonResponse(
+        fallbackResponse.text || fallbackResponse.response?.text() || ""
+      );
+      return JSON.parse(cleanedText) as ProcessoTriagemResult;
+    } catch (fallbackError: any) {
+      throw new Error(
+        `Falha ao extrair dados do processo: ${error?.message || error}`
+      );
+    }
   }
 }
 
 /**
- * 2. Extração de Extrato Bancário (aceita Buffer ou Base64 + MimeType opcional)
+ * Extração de Extrato Bancário
  */
 export async function extractExtratoBancario(
   fileInput: Buffer | string,
@@ -141,7 +159,7 @@ export async function extractExtratoBancario(
 }
 
 /**
- * 3. Geração de Minuta / Laudo Pericial
+ * Geração de Minuta / Laudo Pericial
  */
 export async function generateLaudoMinuta(data: any): Promise<any> {
   const ai = getGeminiClient();
