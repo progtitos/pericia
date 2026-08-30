@@ -7,13 +7,13 @@ if (!apiKey) {
 
 const genAI = new GoogleGenerativeAI(apiKey);
 
-// Constantes exportadas
 export const SEGUNDOS_ESTIMADOS_POR_BLOCO_FALLBACK = 4;
 
 export interface ProgressoProcessamento {
   progresso: number;
   mensagem: string;
   tempoRestanteSegundos: number;
+  estimativa_segundos?: number;
   status: "processing" | "done" | "error";
   blocos_concluidos: number;
   total_blocos: number;
@@ -42,6 +42,7 @@ export function montarProgresso({
     progresso: status === "done" ? 100 : percentual,
     mensagem,
     tempoRestanteSegundos: segundosRestantes,
+    estimativa_segundos: segundosRestantes,
     status,
     blocos_concluidos: blocosConcluidos,
     total_blocos: totalBlocos,
@@ -77,7 +78,6 @@ function dividirTextoEmBlocos(texto: string, tamanhoMaximoCaracteres = 180000): 
   return blocos;
 }
 
-// 1. Extração do Processo
 export async function processarExtracaoProcessoFreeTier(
   bufferPdf: Buffer,
   options?: {
@@ -159,7 +159,6 @@ export async function processarExtracaoProcessoFreeTier(
   return resultadoAcumulado;
 }
 
-// 2. Extração do Extrato Bancário
 export async function extractExtratoBancario(
   fileBase64: string,
   mimeType: string = "application/pdf"
@@ -196,7 +195,6 @@ export async function extractExtratoBancario(
   }
 }
 
-// 3. Geração de Laudo (aceita 1 objeto ou 2 parâmetros separados)
 export async function generateLaudoMinuta(
   paramsOrDados: any,
   calculos?: any
