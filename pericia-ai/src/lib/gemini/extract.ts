@@ -1,9 +1,7 @@
 import { getGeminiClient, MODELS } from "./client";
-import { PROMPTS } from "./prompts";
-import { processInChunks } from "./chunking";
 
 /**
- * Interface padronizada dos dados extraídos do processo na Triagem.
+ * Interfaces dos dados extraídos do processo, extrato e laudo.
  */
 export interface ProcessoTriagemResult {
   numero_processo?: string;
@@ -29,9 +27,6 @@ export interface ProcessoTriagemResult {
   _chunking_info?: any;
 }
 
-/**
- * Função utilitária para limpar formatação Markdown ```json ... ``` que o Gemini costuma retornar.
- */
 function cleanJsonResponse(rawText: string): string {
   return rawText
     .replace(/^```json\s*/i, "")
@@ -41,23 +36,26 @@ function cleanJsonResponse(rawText: string): string {
 }
 
 /**
- * Extrai dados estruturados do PDF do processo para a fase de Triagem.
- * Processa o documento via Gemini utilizando os modelos mais recentes e chunking se necessário.
+ * 1. Extração do Processo para Triagem
  */
 export async function extractProcessoTriagem(
   pdfBuffer: Buffer
 ): Promise<ProcessoTriagemResult> {
   const ai = getGeminiClient();
-
-  // Garante que o modelo utilizado seja o configurado no client (gemini-2.5-flash / gemini-3.1-pro-preview)
   const modelName = MODELS.PRO || "gemini-2.5-flash";
   const model = ai.getGenerativeModel({ model: modelName });
 
   try {
-    // 1. Tenta o processamento com a lógica de chunking/processamento seguro
-    const promptText = PROMPTS.TRIAGEM_PROCESSO || `
-      Você é um perito judicial especialista. Analise o texto do processo fornecido e extraia um JSON estrito com os dados numéricos e jurídicos essenciais para o recálculo.
-      Retorne APENAS um objeto JSON válido sem formatação markdown no seguinte formato:
+    const base64Pdf = pdfBuffer.toString("base64");
+    const response = await model.generateContent([
+      {
+        inlineData: {
+          data: base64Pdf,
+          mimeType: "application/pdf",
+        },
+      },
+      `Você é um perito judicial especialista. Analise o texto do processo fornecido e extraia um JSON estrito com os dados numéricos e jurídicos essenciais para o recálculo.
+      Retorne APENAS um objeto JSON válido no formato:
       {
         "numero_processo": "string",
         "autor": "string",
@@ -77,38 +75,78 @@ export async function extractProcessoTriagem(
           { "tipo": "string", "valor": 0.0, "data_base": "YYYY-MM-DD" }
         ],
         "observacoes_para_conferencia_humana": "string"
-      }
-    `;
+      }`,
+    ]);
 
-    const resultText = await processInChunks(pdfBuffer, promptText, modelName);
-    const cleanedText = cleanJsonResponse(resultText);
-
-    const parsed = JSON.parse(cleanedText);
-    return parsed as ProcessoTriagemResult;
+    const cleanedText = cleanJsonResponse(response.response.text());
+    return JSON.parse(cleanedText) as ProcessoTriagemResult;
   } catch (error: any) {
     console.error("Erro no extractProcessoTriagem:", error);
+    throw new Error(`Falha ao extrair dados do processo: ${error?.message || error}`);
+  }
+}
 
-    // Se falhar o parse do JSON ou a requisição direta, tenta um fallback usando gemini-2.5-flash diretamente
-    try {
-      const fallbackModel = ai.getGenerativeModel({ model: "gemini-2.5-flash" });
-      const base64Pdf = pdfBuffer.toString("base64");
+/**
+ * 2. Extração de Extrato Bancário
+ */
+export async function extractExtratoBancario(pdfBuffer: Buffer): Promise<any> {
+  const ai = getGeminiClient();
+  const modelName = MODELS.FLASH || "gemini-2.5-flash";
+  const model = ai.getGenerativeModel({ model: modelName });
 
-      const response = await fallbackModel.generateContent([
-        {
-          inlineData: {
-            data: base64Pdf,
-            mimeType: "application/pdf",
-          },
+  try {
+    const base64Pdf = pdfBuffer.toString("base64");
+    const response = await model.generateContent([
+      {
+        inlineData: {
+          data: base64Pdf,
+          mimeType: "application/pdf",
         },
-        "Extraia apenas um objeto JSON estrito com os dados do processo: numero_processo, autor, réu, vara, observacoes_para_conferencia_humana.",
-      ]);
+      },
+      `Extraia as movimentações financeiras do extrato bancário em formato JSON estrito:
+      {
+        "banco": "string",
+        "conta": "string",
+        "lancamentos": [
+          { "data": "YYYY-MM-DD", "descricao": "string", "valor": 0.0, "tipo": "C ou D" }
+        ]
+      }`,
+    ]);
 
-      const text = cleanJsonResponse(response.response.text());
-      return JSON.parse(text) as ProcessoTriagemResult;
-    } catch (fallbackError) {
-      throw new Error(
-        `Falha ao extrair dados do processo via Gemini: ${error?.message || error}`
-      );
-    }
+    const cleanedText = cleanJsonResponse(response.response.text());
+    return JSON.parse(cleanedText);
+  } catch (error: any) {
+    console.error("Erro no extractExtratoBancario:", error);
+    throw new Error(`Falha ao extrair extrato: ${error?.message || error}`);
+  }
+}
+
+/**
+ * 3. Geração de Minuta / Laudo Pericial
+ */
+export async function generateLaudoMinuta(data: any): Promise<any> {
+  const ai = getGeminiClient();
+  const modelName = MODELS.PRO || "gemini-2.5-flash";
+  const model = ai.getGenerativeModel({ model: modelName });
+
+  try {
+    const response = await model.generateContent([
+      `Com base nos dados periciais fornecidos abaixo, elabore a minuta do laudo pericial em formato JSON estrito:
+      ${JSON.stringify(data)}
+      
+      Retorne:
+      {
+        "titulo": "string",
+        "resumo_executivo": "string",
+        "metodologia": "string",
+        "conclusao": "string"
+      }`,
+    ]);
+
+    const cleanedText = cleanJsonResponse(response.response.text());
+    return JSON.parse(cleanedText);
+  } catch (error: any) {
+    console.error("Erro no generateLaudoMinuta:", error);
+    throw new Error(`Falha ao gerar minuta: ${error?.message || error}`);
   }
 }
