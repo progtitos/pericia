@@ -8,11 +8,12 @@ import type { TokenPreviewInfo } from "@/lib/types";
 interface FileUploaderProps {
   caseId: string;
   fileType: "processo_pdf" | "extrato_pdf" | "planilha_excel";
-  // Atualizado: passa o objeto 'file' de tipo File e o texto extraído
+  // Passa o arquivo File, o texto extraído e o token preview
   onUploaded: (file: File, textoExtraido?: string, tokenPreview?: TokenPreviewInfo) => void;
   accept?: string;
   label: string;
   showTokenPreview?: boolean;
+  extrairTexto?: boolean; // Propriedade adicionada para resolver o erro de compilação
 }
 
 const STATUS_STYLES: Record<TokenPreviewInfo["status"], { bar: string; text: string; bg: string }> = {
@@ -28,6 +29,7 @@ export function FileUploader({
   accept,
   label,
   showTokenPreview = false,
+  extrairTexto = false,
 }: FileUploaderProps) {
   const supabase = createClient();
   const [uploading, setUploading] = useState(false);
@@ -63,12 +65,12 @@ export function FileUploader({
         file_type: fileType,
       });
 
-      if (!showTokenPreview) {
+      if (!showTokenPreview && !extrairTexto) {
         onUploaded(file);
         return;
       }
 
-      // 2. Extração rápida de tokens direto no Navegador (sem timeout de servidor)
+      // 2. Extração rápida de tokens direto no Navegador
       setUploading(false);
       setCountingTokens(true);
 
