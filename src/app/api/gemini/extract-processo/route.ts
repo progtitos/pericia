@@ -1,41 +1,27 @@
-import { NextRequest, NextResponse } from "next/server";
-import { processarTextoProcesso, humanizarErroGemini } from "@/lib/gemini/extract";
+import { NextResponse } from "next/server";
+import { processarTextoProcesso } from "@/lib/claude/extract";
 
-// Duração máxima da função serverless. Processos extensos agora são
-// divididos em vários blocos processados em SEQUÊNCIA (nunca truncados),
-// cada um com retry automático em caso de 503/429 — isso pode levar mais
-// tempo do que os 60s antigos. 300s é o teto do plano Vercel Pro; no plano
-// Hobby o limite é 60s independente do que for configurado aqui — se o seu
-// projeto estiver no Hobby e continuar expirando em documentos muito
-// grandes, é necessário migrar para Pro (Fluid Compute) ou mover este
-// processamento para um job em background.
-export const maxDuration = 300;
+export const runtime = "nodejs";
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const { texto } = body;
+    const { texto, caseId } = await req.json();
 
-    if (!texto || typeof texto !== "string") {
+    if (!texto) {
       return NextResponse.json(
-        { error: "Nenhum texto válido foi fornecido." },
+        { error: "Texto do processo não fornecido." },
         { status: 400 }
       );
     }
 
-    // Processa o texto extraído diretamente no Gemini. Documentos extensos
-    // são divididos em blocos (nunca truncados) e cada bloco tem retry
-    // automático para erros transitórios (503 sobrecarga, 429 limite de taxa).
-    const resultado = await processarTextoProcesso(texto);
+    // Chama o Claude com a chave ANTHROPIC_API_KEY
+    const resultado = await processarTextoProcesso(texto, caseId);
 
-    return NextResponse.json({
-      status: "done",
-      resultado,
-    });
+    return NextResponse.json(resultado);
   } catch (error: any) {
     console.error("[API Extract Error]:", error);
     return NextResponse.json(
-      { error: humanizarErroGemini(error) },
+      { error: error.message || "Erro durante o processamento do documento." },
       { status: 500 }
     );
   }
