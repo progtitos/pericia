@@ -80,3 +80,24 @@ export interface ResultadoCalculoPrevidenciario {
   valor_liquido_final: number;
   base_legal: string[];
 }
+
+/** Tipagens auxiliares para chunking e contagem de tokens */
+export interface ChunkingBlockInfo {
+  id?: string;
+  index?: number;
+  texto?: string;
+  tokens?: number;
+  status?: string;
+}
+
+export interface TokenPreviewInfo {
+  totalTokens?: number;
+  totalBlocos?: number;
+  estimativaSegundos?: number;
+}
+
+export interface TokenWindowStatus {
+  dentroDoLimite?: boolean;
+  porcentagemUso?: number;
+  limiteMaximo?: number;
+}
