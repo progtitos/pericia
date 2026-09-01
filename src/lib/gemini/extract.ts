@@ -17,12 +17,13 @@ export interface ProgressoProcessamento {
   erro?: string;
 }
 
-// Modelo exigido pelo endpoint da API
-const MODEL_NAME = "gemini-3.6-flash";
+// Modelo oficial de alta disponibilidade para mitigar 503/429 em requisições sequenciais
+const MODEL_NAME = "gemini-1.5-flash";
 export { MODEL_NAME };
 
 const MAX_CHARS_POR_BLOCO = 200_000;
-const DELAY_ENTRE_BLOCOS_MS = 2000;
+// Intervalo de 3.5s entre blocos para estabilizar o limite de requisições por minuto (RPM/TPM)
+const DELAY_ENTRE_BLOCOS_MS = 3500;
 
 const MAX_TENTATIVAS = 5;
 const BACKOFF_BASE_MS = 3000;
