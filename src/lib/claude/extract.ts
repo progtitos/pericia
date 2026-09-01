@@ -29,6 +29,7 @@ export async function processarTextoProcesso(
 ): Promise<ProcessoTriagemExtraido> {
   const anthropic = getClaudeClient();
 
+  // Usa o identificador base do Sonnet 3.5 compatível com todas as contas Anthropic
   const response = await anthropic.messages.create({
     model: "claude-3-5-sonnet-20241022",
     max_tokens: 4000,
