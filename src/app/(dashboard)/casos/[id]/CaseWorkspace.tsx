@@ -141,7 +141,7 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
   }
 
   /** Persiste a triagem (+ texto paginado, quando houver) em
-   *  forensic_cases.metadata — é de lá que /api/gemini/gerar-laudo lê o
+   *  forensic_cases.metadata — é de lá que /api/claude/gerar-laudo lê o
    *  contexto (inclusive para citar fls.) na hora de escrever a minuta. */
   async function persistirMetadadosDoCaso(dados: ProcessoTriagemExtraido, textoCompleto?: string | null) {
     try {
@@ -158,7 +158,7 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
     setProgresso(90);
 
     try {
-      const res = await fetch("/api/gemini/extract-processo", {
+      const res = await fetch("/api/claude/extract-processo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ texto, caseId }),
@@ -218,7 +218,7 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
     if (!textoExtraido) return;
     setExtratoLoading(true);
     try {
-      const res = await fetch("/api/gemini/extract-extrato", {
+      const res = await fetch("/api/claude/extract-extrato", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ texto: textoExtraido, caseId }),
@@ -270,7 +270,7 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
     try {
       if (triagem) await persistirMetadadosDoCaso(triagem, textoPaginado);
 
-      const res = await fetch("/api/gemini/gerar-laudo", {
+      const res = await fetch("/api/claude/gerar-laudo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ caseId, runId }),

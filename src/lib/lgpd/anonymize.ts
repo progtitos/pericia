@@ -1,6 +1,6 @@
 /**
  * Módulo de anonimização prévia (LGPD, art. 13/§único e boas práticas de
- * minimização de dados) — aplicado ao texto ANTES de enviá-lo ao Gemini,
+ * minimização de dados) — aplicado ao texto ANTES de enviá-lo à IA (Claude),
  * quando ENABLE_ANONYMIZATION_BEFORE_AI=true.
  *
  * Estratégia: mascarar CPF/CNPJ e contas/agências bancárias com um token

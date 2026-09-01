@@ -32,7 +32,7 @@ export async function extractTextFromPDF(
     const pageText = textContent.items
       .map((item: any) => item.str)
       .join(" ");
-    // Marcador de folha ([[FLS. N]]): permite que a geração do laudo (Gemini)
+    // Marcador de folha ([[FLS. N]]): permite que a geração do laudo (Claude)
     // cite a página exata de onde tirou uma informação (ex.: "conforme
     // decisão de fls. 142"), sem precisar adivinhar. O marcador é ignorado
     // explicitamente no prompt de extração/laudo — nunca tratado como
