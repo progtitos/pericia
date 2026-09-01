@@ -1,4 +1,4 @@
-// pericia-ai/src/lib/gemini/extract.ts
+// src/lib/gemini/extract.ts
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import type { ProcessoTriagemExtraido } from "@/lib/types";
@@ -17,23 +17,13 @@ export interface ProgressoProcessamento {
   erro?: string;
 }
 
-const MODEL_NAME = "gemini-3.6-flash";
+// Modelo oficial atualizado e ativo da API do Gemini
+const MODEL_NAME = "gemini-2.5-flash";
 export { MODEL_NAME };
 
-// Nenhum bloco enviado ao Gemini deve passar disso — mantém cada requisição
-// leve (menos chance de 503/timeout) e, mais importante, GARANTE que o
-// documento inteiro seja processado, em vez do corte fixo de 800.000
-// caracteres que existia antes (que descartava silenciosamente processos
-// grandes, ex.: um PDF de 775 páginas perdia mais da metade do conteúdo).
 const MAX_CHARS_POR_BLOCO = 200_000;
-
-// Pausa entre chamadas sequenciais de blocos — reduz a chance de o próprio
-// volume de requisições em sequência disparar um novo 503/429.
 const DELAY_ENTRE_BLOCOS_MS = 2000;
 
-// Retry com backoff exponencial para erros TRANSITÓRIOS (503 sobrecarga,
-// 429 limite de taxa). Erros de outra natureza (JSON inválido, API key
-// ausente, etc.) não são re-tentados — não adianta tentar de novo.
 const MAX_TENTATIVAS = 4;
 const BACKOFF_BASE_MS = 2000;
 
@@ -50,10 +40,7 @@ function isErroTransitorio(err: unknown): boolean {
 }
 
 /**
- * Converte o erro cru do SDK (ex.: "[GoogleGenerativeAI Error]: Error
- * fetching from ... [503 Service Unavailable] This model is currently
- * experiencing high demand...") numa mensagem curta e acionável em
- * português, para nunca mostrar stack trace de SDK na tela do perito.
+ * Converte o erro cru do SDK numa mensagem curta em português.
  */
 export function humanizarErroGemini(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
@@ -73,9 +60,7 @@ export function humanizarErroGemini(err: unknown): string {
   return msg;
 }
 
-/** Executa `fn`, tentando novamente com backoff exponencial (+jitter) se o
- *  erro for transitório. Propaga imediatamente qualquer erro não-transitório.
- *  Exportado para reuso em outros módulos que chamam o Gemini (ex.: laudo.ts). */
+/** Executa `fn`, tentando novamente com backoff exponencial se o erro for transitório. */
 export async function comRetry<T>(fn: () => Promise<T>, contexto: string): Promise<T> {
   let ultimoErro: unknown;
 
@@ -102,21 +87,18 @@ export async function comRetry<T>(fn: () => Promise<T>, contexto: string): Promi
 }
 
 export function getModel() {
-  if (!process.env.GEMINI_API_KEY) {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GEMINI_API_KEY;
+  if (!apiKey) {
     throw new Error("A chave GEMINI_API_KEY não está configurada.");
   }
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  const genAI = new GoogleGenerativeAI(apiKey);
   return genAI.getGenerativeModel({
     model: MODEL_NAME,
     generationConfig: { responseMimeType: "application/json" },
   });
 }
 
-/**
- * Divide o texto completo em blocos de até MAX_CHARS_POR_BLOCO caracteres,
- * cortando em uma quebra de linha próxima ao limite (nunca no meio de uma
- * frase/número) para não partir um valor monetário ou uma data ao meio.
- */
+/** Divide o texto completo em blocos sem cortar frases ou números ao meio. */
 function dividirEmBlocos(texto: string): string[] {
   if (texto.length <= MAX_CHARS_POR_BLOCO) return [texto];
 
@@ -138,7 +120,7 @@ function dividirEmBlocos(texto: string): string[] {
 
 function buildPromptTriagem(texto: string, blocoInfo?: { indice: number; total: number }): string {
   const contextoBloco = blocoInfo
-    ? `\nEste é o BLOCO ${blocoInfo.indice} de ${blocoInfo.total} de um processo extenso (um trecho, não o documento inteiro). Se um campo não aparecer neste trecho, retorne null para ele — pode estar em outro bloco.\n`
+    ? `\nEste é o BLOCO ${blocoInfo.indice} de ${blocoInfo.total} de um processo extenso. Se um campo não aparecer neste trecho, retorne null para ele.\n`
     : "";
 
   return `
@@ -169,8 +151,7 @@ function buildPromptTriagem(texto: string, blocoInfo?: { indice: number; total: 
   Regra: extraia apenas o que está literalmente no texto. Campo ausente = null. Nunca estime.
   Importante: o texto contém marcadores no formato [[FLS. N]] indicando o início de cada
   folha/página do processo. Esses marcadores NÃO são conteúdo do processo — nunca os copie
-  para nenhum campo do JSON. Eles servem apenas para você (e para etapas futuras) localizar
-  em qual folha uma informação aparece.
+  para nenhum campo do JSON.
 
   Texto do processo:
   ${texto}
@@ -195,7 +176,7 @@ function normalizarResultado(jsonParsed: any): ProcessoTriagemExtraido {
   };
 }
 
-/** Extrai um único bloco de texto (uma chamada ao Gemini), com retry embutido. */
+/** Extrai um único bloco de texto com retry embutido. */
 async function extrairBloco(
   texto: string,
   blocoInfo?: { indice: number; total: number }
@@ -211,12 +192,7 @@ async function extrairBloco(
   return normalizarResultado(JSON.parse(resultado));
 }
 
-/**
- * Mescla extrações parciais de vários blocos numa única extração
- * consolidada: primeiro valor não-nulo vence, arrays são concatenados.
- * Feito por código determinístico — nunca por uma chamada extra à IA — para
- * não introduzir mais uma requisição que possa esbarrar em 503/429.
- */
+/** Mescla extrações parciais por código determinístico. */
 function mesclarParciais(parciais: ProcessoTriagemExtraido[]): ProcessoTriagemExtraido {
   const primeiroNaoNulo = <T,>(vals: (T | null)[]): T | null =>
     vals.find((v) => v !== null && v !== undefined) ?? null;
@@ -244,22 +220,13 @@ function mesclarParciais(parciais: ProcessoTriagemExtraido[]): ProcessoTriagemEx
   };
 }
 
-/**
- * Processa o texto completo do processo:
- *  - Se couber num único bloco, faz UMA chamada (caminho rápido — a maioria
- *    dos processos cai aqui).
- *  - Se for extenso, divide em blocos de até 200.000 caracteres e processa
- *    sequencialmente, com pausa entre chamadas e retry automático em caso de
- *    503/429, depois consolida tudo por código determinístico.
- *  - Nunca corta/descarta parte do texto: documentos grandes são divididos,
- *    não truncados.
- */
 export async function processarTextoProcesso(
   texto: string,
   caseId?: string,
   onProgress?: (info: ProgressoProcessamento) => void
 ): Promise<ProcessoTriagemExtraido> {
-  if (!process.env.GEMINI_API_KEY) {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GEMINI_API_KEY;
+  if (!apiKey) {
     throw new Error("A chave GEMINI_API_KEY não está configurada.");
   }
 
