@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-display: "Source Serif 4", Georgia, serif;
+  --font-body: "Inter", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+body {
+  @apply bg-parchment text-ink font-body antialiased;
+}
+
+/* Números financeiros: sempre alinhados como em um livro-razão. */
+.tabular-figures {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Selo de conferência pericial — o elemento-assinatura do produto:
+   um círculo de "lacre" que marca itens verificados (verde) ou que exigem
+   conferência humana obrigatória (vermelho), evocando o carimbo pericial. */
+.selo-pericial {
+  @apply inline-flex items-center justify-center rounded-full border-2 font-display text-[10px] tracking-widest uppercase;
+  width: 2.25rem;
+  height: 2.25rem;
+}
+.selo-pericial--conferido {
+  @apply border-seal-green text-seal-green;
+}
+.selo-pericial--alerta {
+  @apply border-seal-red text-seal-red;
+}
+
+/* Regra de "livro-razão": hairline entre linhas de tabela, sem sombras. */
+.linha-ledger {
+  @apply border-b border-ink-100;
+}
+
+:focus-visible {
+  outline: 2px solid theme("colors.brass.DEFAULT");
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
