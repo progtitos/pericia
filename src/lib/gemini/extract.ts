@@ -17,21 +17,21 @@ export interface ProgressoProcessamento {
   erro?: string;
 }
 
-// Modelo oficial atualizado e ativo da API do Gemini
-const MODEL_NAME = "gemini-2.5-flash";
+// Modelo exigido pelo endpoint da API
+const MODEL_NAME = "gemini-3.6-flash";
 export { MODEL_NAME };
 
 const MAX_CHARS_POR_BLOCO = 200_000;
 const DELAY_ENTRE_BLOCOS_MS = 2000;
 
-const MAX_TENTATIVAS = 4;
-const BACKOFF_BASE_MS = 2000;
+const MAX_TENTATIVAS = 5;
+const BACKOFF_BASE_MS = 3000;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Detecta se um erro do Gemini é transitório (vale a pena tentar de novo). */
+/** Detecta se um erro do Gemini é transitório (sobrecarga 503 ou rate limit 429). */
 function isErroTransitorio(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return /503|429|overloaded|high demand|unavailable|resource_exhausted|rate limit|timeout|deadline/i.test(
@@ -39,28 +39,21 @@ function isErroTransitorio(err: unknown): boolean {
   );
 }
 
-/**
- * Converte o erro cru do SDK numa mensagem curta em português.
- */
 export function humanizarErroGemini(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
 
   if (/503|overloaded|high demand|unavailable/i.test(msg)) {
-    return "O Gemini está temporariamente sobrecarregado (erro 503 do próprio Google). Isso costuma se resolver em alguns minutos — tente novamente.";
+    return "O Gemini está temporariamente sobrecarregado (erro 503). O sistema tentou reprocessar automaticamente, tente reenviar em alguns segundos.";
   }
   if (/429|resource_exhausted|rate limit/i.test(msg)) {
-    return "Limite de requisições da API do Gemini atingido no momento. Aguarde um instante e tente novamente.";
+    return "Limite de requisições por minuto atingido no Gemini. Aguarde alguns instantes.";
   }
   if (/api key|apikey|permission|unauthorized|401|403/i.test(msg)) {
     return "Falha de autenticação com a API do Gemini. Verifique a variável GEMINI_API_KEY no servidor.";
   }
-  if (/json/i.test(msg)) {
-    return "O Gemini retornou uma resposta em formato inesperado para este trecho do processo. Tente novamente ou revise o PDF enviado.";
-  }
   return msg;
 }
 
-/** Executa `fn`, tentando novamente com backoff exponencial se o erro for transitório. */
 export async function comRetry<T>(fn: () => Promise<T>, contexto: string): Promise<T> {
   let ultimoErro: unknown;
 
@@ -74,10 +67,9 @@ export async function comRetry<T>(fn: () => Promise<T>, contexto: string): Promi
         throw err;
       }
 
-      const espera = BACKOFF_BASE_MS * 2 ** (tentativa - 1) + Math.floor(Math.random() * 500);
+      const espera = BACKOFF_BASE_MS * 2 ** (tentativa - 1) + Math.floor(Math.random() * 1000);
       console.warn(
-        `[Gemini] ${contexto}: erro transitório na tentativa ${tentativa}/${MAX_TENTATIVAS}, ` +
-          `tentando de novo em ${espera}ms. Motivo: ${(err as Error)?.message ?? err}`
+        `[Gemini] ${contexto}: oscilação no servidor na tentativa ${tentativa}/${MAX_TENTATIVAS}. Re-tentando em ${espera}ms...`
       );
       await delay(espera);
     }
@@ -98,7 +90,6 @@ export function getModel() {
   });
 }
 
-/** Divide o texto completo em blocos sem cortar frases ou números ao meio. */
 function dividirEmBlocos(texto: string): string[] {
   if (texto.length <= MAX_CHARS_POR_BLOCO) return [texto];
 
@@ -149,9 +140,7 @@ function buildPromptTriagem(texto: string, blocoInfo?: { indice: number; total: 
   }
 
   Regra: extraia apenas o que está literalmente no texto. Campo ausente = null. Nunca estime.
-  Importante: o texto contém marcadores no formato [[FLS. N]] indicando o início de cada
-  folha/página do processo. Esses marcadores NÃO são conteúdo do processo — nunca os copie
-  para nenhum campo do JSON.
+  Importante: o texto contém marcadores no formato [[FLS. N]] indicando o início de cada folha do processo. Nunca os copie para nenhum campo do JSON.
 
   Texto do processo:
   ${texto}
@@ -176,7 +165,6 @@ function normalizarResultado(jsonParsed: any): ProcessoTriagemExtraido {
   };
 }
 
-/** Extrai um único bloco de texto com retry embutido. */
 async function extrairBloco(
   texto: string,
   blocoInfo?: { indice: number; total: number }
@@ -192,7 +180,6 @@ async function extrairBloco(
   return normalizarResultado(JSON.parse(resultado));
 }
 
-/** Mescla extrações parciais por código determinístico. */
 function mesclarParciais(parciais: ProcessoTriagemExtraido[]): ProcessoTriagemExtraido {
   const primeiroNaoNulo = <T,>(vals: (T | null)[]): T | null =>
     vals.find((v) => v !== null && v !== undefined) ?? null;
