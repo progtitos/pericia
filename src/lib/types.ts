@@ -85,6 +85,10 @@ export interface ResultadoCalculoPrevidenciario {
 export interface ChunkingBlockInfo {
   id?: string;
   index?: number;
+  indice?: number;
+  rotulo?: string;
+  paginaInicial?: number;
+  paginaFinal?: number;
   texto?: string;
   tokens?: number;
   status?: string;
