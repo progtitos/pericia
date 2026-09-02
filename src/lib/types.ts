@@ -27,6 +27,11 @@ export interface ProcessoTriagemExtraido {
     reu: string[];
   };
   observacoes_para_conferencia_humana: string[]; // pontos de baixa confiança da extração
+  _chunking_info?: {
+    chunked?: boolean;
+    totalBlocos?: number;
+    blocos?: ChunkingBlockInfo[];
+  };
 }
 
 /** Uma linha normalizada de extrato bancário extraída via OCR multimodal. */
