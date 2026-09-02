@@ -9,10 +9,6 @@ export const maxDuration = 60;
 /**
  * POST /api/calculo/demonstrativo
  * body: { caseId: string, parametros: ParametrosCalculoPrevidenciario, honorariosPercentual?: number }
- *
- * Executa o motor determinístico (lib/calc/previdenciario.ts) e persiste o
- * resultado como uma nova "calculation_run" versionada — nunca sobrescreve
- * um cálculo anterior, para manter a trilha de auditoria pericial.
  */
 export async function POST(req: NextRequest) {
   const supabase = await createClient();
@@ -27,9 +23,34 @@ export async function POST(req: NextRequest) {
     honorariosPercentual?: number;
   };
 
+  // 1. Validação de estrutura básica
   if (!caseId || !parametros) {
     return NextResponse.json(
-      { error: "caseId e parametros são obrigatórios." },
+      { error: "Os campos caseId e parametros são obrigatórios." },
+      { status: 400 }
+    );
+  }
+
+  // 2. Sanitize e validação de datas e valores do cálculo
+  const { rmi, dib, data_citacao, data_base_calculo, indice_ate_112021 } = parametros;
+
+  if (!data_base_calculo || data_base_calculo.trim() === "") {
+    return NextResponse.json(
+      { error: "A Data-Base do Cálculo (Sentença/Decisão) é obrigatória para executar o recálculo." },
+      { status: 400 }
+    );
+  }
+
+  if (!dib || dib.trim() === "") {
+    return NextResponse.json(
+      { error: "A DIB (Data de Início do Benefício) é obrigatória." },
+      { status: 400 }
+    );
+  }
+
+  if (!rmi || Number(rmi) <= 0) {
+    return NextResponse.json(
+      { error: "A RMI deve ser um número maior que zero." },
       { status: 400 }
     );
   }
@@ -62,7 +83,7 @@ export async function POST(req: NextRequest) {
       original_value: c.valor_original,
       index_applied: c.indice_aplicado,
       index_rate: c.taxa_indice,
-      monetary_correction: c.correcao_monetaria,
+      monetaria_correction: c.correcao_monetaria,
       interest_value: c.juros,
       corrected_value: c.valor_corrigido,
     }));
