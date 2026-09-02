@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
   }
 
   // 2. Sanitize e validação de datas e valores do cálculo
-  const { rmi, dib, data_citacao, data_base_calculo, indice_ate_112021 } = parametros;
+  const { rmi, dib, data_base_calculo } = parametros;
 
   if (!data_base_calculo || data_base_calculo.trim() === "") {
     return NextResponse.json(
@@ -83,7 +83,7 @@ export async function POST(req: NextRequest) {
       original_value: c.valor_original,
       index_applied: c.indice_aplicado,
       index_rate: c.taxa_indice,
-      monetaria_correction: c.correcao_monetaria,
+      monetary_correction: c.correcao_monetaria,
       interest_value: c.juros,
       corrected_value: c.valor_corrigido,
     }));
@@ -91,7 +91,8 @@ export async function POST(req: NextRequest) {
     const { error: instError } = await supabase
       .from("calculation_installments")
       .insert(installments);
-    if (instError) throw new Error(instError.message);
+      
+    if (instError) throw new Error(`Falha ao inserir parcelas: ${instError.message}`);
 
     await supabase
       .from("forensic_cases")
