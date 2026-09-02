@@ -66,6 +66,13 @@ export function humanizarErroGemini(err: unknown): string {
   if (/api key|permission|unauthorized|401|403/i.test(msg)) {
     return "Falha de autenticação com a API do Gemini. Verifique a variável GEMINI_API_KEY no servidor.";
   }
+  if (/404|not_found|no longer available/i.test(msg)) {
+    return (
+      "O modelo do Gemini configurado no servidor não está mais disponível para esta chave de API " +
+      "(a Google troca a geração padrão do free tier com frequência). Verifique o modelo atual em " +
+      "aistudio.google.com e atualize MODEL_EXTRACAO/MODEL_LAUDO em src/lib/gemini/client.ts."
+    );
+  }
   return msg;
 }
 
