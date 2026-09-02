@@ -8,10 +8,6 @@ export const maxDuration = 90;
 /**
  * POST /api/gemini/gerar-laudo
  * body: { caseId: string, runId: string }
- *
- * Monta o contexto (metadados do caso + calculation_run + quesitos aprovados)
- * e delega à IA apenas a REDAÇÃO da minuta — todos os números já vêm
- * calculados deterministicamente (ver lib/calc/previdenciario.ts).
  */
 export async function POST(req: NextRequest) {
   const supabase = await createClient();
@@ -30,11 +26,7 @@ export async function POST(req: NextRequest) {
       await Promise.all([
         supabase.from("forensic_cases").select("*").eq("id", caseId).single(),
         supabase.from("calculation_runs").select("*").eq("id", runId).single(),
-        supabase
-          .from("calculation_installments")
-          .select("*")
-          .eq("run_id", runId)
-          .order("competence"),
+        supabase.from("calculation_installments").select("*").eq("run_id", runId).order("competence"),
         supabase
           .from("case_questions")
           .select("author, question_text")
@@ -51,11 +43,6 @@ export async function POST(req: NextRequest) {
       competencias: installments,
     };
 
-    // O texto integral do processo (com marcadores [[FLS. N]] por página) é
-    // persistido pelo client dentro de forensic_cases.metadata junto com a
-    // triagem (ver CaseWorkspace.tsx -> persistirMetadadosDoCaso), sob a
-    // chave "_texto_paginado" — é isso que permite ao laudo citar folhas
-    // exatas em vez de "conforme os autos" genérico.
     const metadata = (forensicCase.metadata ?? {}) as Record<string, unknown>;
     const textoPaginado = typeof metadata._texto_paginado === "string" ? metadata._texto_paginado : null;
     const { _texto_paginado, ...processoTriagem } = metadata;
@@ -92,9 +79,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: true, draft });
   } catch (err: any) {
-    return NextResponse.json(
-      { error: humanizarErroGemini(err) },
-      { status: 500 }
-    );
+    console.error("[API Gerar Laudo Error]:", err);
+    return NextResponse.json({ error: humanizarErroGemini(err) }, { status: 500 });
   }
 }

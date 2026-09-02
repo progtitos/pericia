@@ -55,6 +55,13 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  if (parametros.indice_ate_112021 !== "IPCA-E" && parametros.indice_ate_112021 !== "INPC") {
+    return NextResponse.json(
+      { error: 'O índice até 11/2021 deve ser "IPCA-E" ou "INPC".' },
+      { status: 400 }
+    );
+  }
+
   try {
     const resultado = await calcularPrevidenciario(parametros, honorariosPercentual ?? 0.1);
 
@@ -101,6 +108,10 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: true, runId: run.id, resultado });
   } catch (err: any) {
+    // IMPORTANTE: antes esta rota não logava nada no catch — um 500 aqui
+    // vinha sem nenhum rastro no painel de Functions da Vercel, só o JSON
+    // de erro chegava ao browser. Agora o erro completo fica registrado.
+    console.error("[API Calculo Demonstrativo Error]:", err);
     return NextResponse.json(
       { error: err?.message || "Erro ao executar o cálculo previdenciário." },
       { status: 500 }

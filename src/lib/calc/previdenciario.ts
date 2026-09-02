@@ -46,6 +46,19 @@ export async function calcularPrevidenciario(
   params: ParametrosCalculoPrevidenciario,
   honorariosPercentual: number = 0.1 // 10% é referência comum; ajustável pelo perito/juízo
 ): Promise<ResultadoCalculoPrevidenciario> {
+  const FORMATO_ISO = /^\d{4}-\d{2}-\d{2}$/;
+  if (!FORMATO_ISO.test(params.dib)) {
+    throw new Error(`DIB inválida ou em formato inesperado ("${params.dib}"). Use o formato AAAA-MM-DD.`);
+  }
+  if (!FORMATO_ISO.test(params.data_base_calculo)) {
+    throw new Error(
+      `Data-base do cálculo inválida ou em formato inesperado ("${params.data_base_calculo}"). Use o formato AAAA-MM-DD.`
+    );
+  }
+  if (params.dib > params.data_base_calculo) {
+    throw new Error("A DIB não pode ser posterior à data-base do cálculo — confira as datas informadas.");
+  }
+
   const competencias = monthRange(params.dib, params.data_base_calculo);
 
   // Busca as séries necessárias de uma vez (evita N chamadas à API do BACEN).
@@ -84,8 +97,13 @@ export async function calcularPrevidenciario(
       taxaIndice = (serieMap[competencia] ?? 0) / 100;
       correcaoMonetaria = valorAcumulado * taxaIndice;
 
-      // Juros de mora só correm a partir da citação.
-      if (competencia >= params.data_citacao.slice(0, 7)) {
+      // Juros de mora só correm a partir da citação. Se a data da citação
+      // não foi informada (string vazia/ausente), tratamos como "sem termo
+      // inicial de juros definido" em vez de deixar `.slice()` estourar em
+      // runtime — evita um 500 silencioso quando o campo fica em branco.
+      const dataCitacaoValida =
+        typeof params.data_citacao === "string" && /^\d{4}-\d{2}/.test(params.data_citacao);
+      if (dataCitacaoValida && competencia >= params.data_citacao.slice(0, 7)) {
         juros = valorAcumulado * TAXA_POUPANCA_MENSAL_FALLBACK;
       }
     }

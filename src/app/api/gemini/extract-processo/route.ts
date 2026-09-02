@@ -1,28 +1,26 @@
-import { NextResponse } from "next/server";
-import { processarTextoProcesso } from "@/lib/claude/extract";
+import { NextRequest, NextResponse } from "next/server";
+import { processarTextoProcesso, humanizarErroGemini } from "@/lib/gemini/extract";
 
-export const runtime = "nodejs";
+// Fatiamento (quando necessário) respeita o RPM do free tier — cada bloco
+// pode levar alguns segundos de pausa antes do próximo. 300s cobre até
+// documentos bem extensos; no plano Hobby da Vercel o teto real é 60s
+// independente do valor aqui.
+export const maxDuration = 300;
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
-    const { texto, caseId } = await req.json();
+    const body = await req.json();
+    const { texto } = body;
 
-    if (!texto) {
-      return NextResponse.json(
-        { error: "Texto do processo não fornecido." },
-        { status: 400 }
-      );
+    if (!texto || typeof texto !== "string") {
+      return NextResponse.json({ error: "Nenhum texto válido foi fornecido." }, { status: 400 });
     }
 
-    // Chama o Claude com a chave ANTHROPIC_API_KEY
-    const resultado = await processarTextoProcesso(texto, caseId);
+    const resultado = await processarTextoProcesso(texto);
 
-    return NextResponse.json(resultado);
+    return NextResponse.json({ status: "done", resultado });
   } catch (error: any) {
     console.error("[API Extract Error]:", error);
-    return NextResponse.json(
-      { error: error.message || "Erro durante o processamento do documento." },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: humanizarErroGemini(error) }, { status: 500 });
   }
 }

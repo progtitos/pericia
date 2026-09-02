@@ -158,7 +158,7 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
     setProgresso(90);
 
     try {
-      const res = await fetch("/api/claude/extract-processo", {
+      const res = await fetch("/api/gemini/extract-processo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ texto, caseId }),
@@ -218,7 +218,7 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
     if (!textoExtraido) return;
     setExtratoLoading(true);
     try {
-      const res = await fetch("/api/claude/extract-extrato", {
+      const res = await fetch("/api/gemini/extract-extrato", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ texto: textoExtraido, caseId }),
@@ -270,7 +270,7 @@ export function CaseWorkspace({ caseId, caseType }: { caseId: string; caseType: 
     try {
       if (triagem) await persistirMetadadosDoCaso(triagem, textoPaginado);
 
-      const res = await fetch("/api/claude/gerar-laudo", {
+      const res = await fetch("/api/gemini/gerar-laudo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ caseId, runId }),

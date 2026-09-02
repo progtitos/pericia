@@ -33,10 +33,7 @@ export async function POST(req: NextRequest) {
 
   const { documentId, caseId } = await req.json();
   if (!documentId || !caseId) {
-    return NextResponse.json(
-      { error: "documentId e caseId são obrigatórios." },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "documentId e caseId são obrigatórios." }, { status: 400 });
   }
 
   const { data: document, error: docError } = await supabase
@@ -50,10 +47,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    await supabase
-      .from("case_documents")
-      .update({ ocr_status: "processing" })
-      .eq("id", documentId);
+    await supabase.from("case_documents").update({ ocr_status: "processing" }).eq("id", documentId);
 
     const { data: fileBlob, error: downloadError } = await supabase.storage
       .from("case-files")
@@ -65,8 +59,7 @@ export async function POST(req: NextRequest) {
 
     const mimeType = document.mime_type || "application/pdf";
     const fileBase64 = Buffer.from(await fileBlob.arrayBuffer()).toString("base64");
-    
-    // Força a tipagem do resultado retornado pela IA e garante fallbacks
+
     const rawData = await extractExtratoBancario(fileBase64, mimeType);
     const extraido: ExtratoResult = {
       banco: rawData?.banco || "",
@@ -77,10 +70,8 @@ export async function POST(req: NextRequest) {
       lancamentos: rawData?.lancamentos || [],
     };
 
-    // Validação determinística de consistência
     const reconciliacao: any = reconciliarExtrato(extraido as any);
 
-    // Grava lançamentos normalizados, evitando erros do TS no campo 'suspeitos'
     const rows = (extraido.lancamentos || []).map((l: LancamentoExtrato, idx: number) => ({
       document_id: documentId,
       case_id: caseId,
@@ -97,19 +88,12 @@ export async function POST(req: NextRequest) {
 
     await supabase
       .from("case_documents")
-      .update({
-        ocr_status: "done",
-        extracted_json: { ...extraido, reconciliacao },
-      })
+      .update({ ocr_status: "done", extracted_json: { ...extraido, reconciliacao } })
       .eq("id", documentId);
 
     return NextResponse.json({ success: true, data: extraido, reconciliacao });
   } catch (err: any) {
-    await supabase
-      .from("case_documents")
-      .update({ ocr_status: "error" })
-      .eq("id", documentId);
-
+    await supabase.from("case_documents").update({ ocr_status: "error" }).eq("id", documentId);
     return NextResponse.json(
       { error: err?.message || "Erro desconhecido na extração do extrato." },
       { status: 500 }

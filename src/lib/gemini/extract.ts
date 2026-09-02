@@ -1,62 +1,75 @@
 // src/lib/gemini/extract.ts
+//
+// Extração de dados de triagem via Gemini (Google AI Studio, FREE TIER).
+// Usa responseSchema (JSON mode nativo do Gemini) para garantir saída
+// estritamente tipada — equivalente ao Tool Use da Anthropic, mas sem custo.
+//
+// PROJETADO PARA O FREE TIER DE VERDADE — leia antes de mexer nos limites:
+// o free tier tem RPM (requisições/minuto), TPM (tokens/minuto) e RPD
+// (requisições/dia) reais. Estourar qualquer um deles = 429
+// RESOURCE_EXHAUSTED. Este módulo:
+//   1. Manda o processo inteiro numa ÚNICA chamada quando cabe no orçamento
+//      de TPM (a maioria dos casos, já que a janela é de 1.000.000 tokens).
+//   2. Se não couber, fatia e RESPEITA o limite de RPM entre chamadas
+//      (60/RPM segundos de pausa, não um número arbitrário).
+//   3. Tenta de novo com backoff em 429/503 — transitórios neste tier são
+//      normais mesmo dentro da cota (variação de carga do lado da Google).
 
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI, Type } from "@google/genai";
+import { getGeminiClient, MODEL_EXTRACAO, FREE_TIER_RPM } from "@/lib/gemini/client";
 import type { ProcessoTriagemExtraido } from "@/lib/types";
-
-export const SEGUNDOS_ESTIMADOS_POR_BLOCO_FALLBACK = 20;
 
 export interface ProgressoProcessamento {
   progresso?: number;
-  mensagem?: string;
-  tempoRestanteSegundos?: number;
-  estimativa_segundos?: number;
+  etapa?: string;
   status?: "processing" | "done" | "error";
   total_blocos?: number;
   blocos_concluidos?: number;
-  etapa?: string;
-  erro?: string;
+  estimativa_segundos?: number;
 }
 
-// Modelo atualizado e exigido pelo endpoint da API
-const MODEL_NAME = "gemini-3.6-flash";
-export { MODEL_NAME };
+// Orçamento seguro por chamada: ~600.000 caracteres ≈ 150.000 tokens
+// estimados, com boa margem dentro do TPM de 250.000 do free tier E da
+// janela de 1.000.000 de tokens do modelo — mesmo um processo de 700+
+// páginas normalmente cabe numa única chamada.
+const MAX_CHARS_POR_BLOCO = 600_000;
 
-// Aumentado para 400.000 para gerar menos blocos e evitar rate limit
-const MAX_CHARS_POR_BLOCO = 400_000;
-// Intervalo de 4s entre chamadas para contornar oscilações de carga 503
-const DELAY_ENTRE_BLOCOS_MS = 4000;
+// Pausa entre chamadas sequenciais = tempo real do limite de RPM do free
+// tier, com uma margem de segurança de 20% (não o mínimo matemático exato).
+const DELAY_ENTRE_BLOCOS_MS = Math.ceil((60_000 / FREE_TIER_RPM) * 1.2);
 
-const MAX_TENTATIVAS = 5;
+const MAX_TENTATIVAS = 4;
 const BACKOFF_BASE_MS = 3000;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Detecta se um erro do Gemini é transitório (sobrecarga 503 ou rate limit 429). */
 function isErroTransitorio(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
-  return /503|429|overloaded|high demand|unavailable|resource_exhausted|rate limit|timeout|deadline/i.test(
-    msg
-  );
+  return /429|503|resource_exhausted|unavailable|overloaded|rate limit|internal/i.test(msg);
 }
 
+/** Mensagem amigável — nunca expõe stack trace de SDK na tela do perito. */
 export function humanizarErroGemini(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
 
-  if (/503|overloaded|high demand|unavailable/i.test(msg)) {
-    return "O Gemini está temporariamente sobrecarregado (erro 503). O sistema tentou reprocessar automaticamente, tente reenviar em alguns segundos.";
-  }
   if (/429|resource_exhausted|rate limit/i.test(msg)) {
-    return "Limite de requisições por minuto atingido no Gemini. Aguarde alguns instantes.";
+    return (
+      `Limite de uso gratuito do Gemini atingido no momento (máx. ${FREE_TIER_RPM} análises por minuto, ` +
+      `250 por dia). Aguarde um instante e tente novamente — o limite diário reseta à meia-noite (horário do Pacífico, EUA).`
+    );
   }
-  if (/api key|apikey|permission|unauthorized|401|403/i.test(msg)) {
+  if (/503|unavailable|overloaded/i.test(msg)) {
+    return "O Gemini está temporariamente sobrecarregado. Tente novamente em alguns segundos.";
+  }
+  if (/api key|permission|unauthorized|401|403/i.test(msg)) {
     return "Falha de autenticação com a API do Gemini. Verifique a variável GEMINI_API_KEY no servidor.";
   }
   return msg;
 }
 
-export async function comRetry<T>(fn: () => Promise<T>, contexto: string): Promise<T> {
+async function comRetry<T>(fn: () => Promise<T>, contexto: string): Promise<T> {
   let ultimoErro: unknown;
 
   for (let tentativa = 1; tentativa <= MAX_TENTATIVAS; tentativa++) {
@@ -64,14 +77,11 @@ export async function comRetry<T>(fn: () => Promise<T>, contexto: string): Promi
       return await fn();
     } catch (err) {
       ultimoErro = err;
-
-      if (!isErroTransitorio(err) || tentativa === MAX_TENTATIVAS) {
-        throw err;
-      }
+      if (!isErroTransitorio(err) || tentativa === MAX_TENTATIVAS) throw err;
 
       const espera = BACKOFF_BASE_MS * 2 ** (tentativa - 1) + Math.floor(Math.random() * 1000);
       console.warn(
-        `[Gemini] ${contexto}: oscilação no servidor na tentativa ${tentativa}/${MAX_TENTATIVAS}. Re-tentando em ${espera}ms...`
+        `[Gemini] ${contexto}: erro transitório na tentativa ${tentativa}/${MAX_TENTATIVAS}, tentando de novo em ${espera}ms.`
       );
       await delay(espera);
     }
@@ -80,16 +90,81 @@ export async function comRetry<T>(fn: () => Promise<T>, contexto: string): Promi
   throw ultimoErro;
 }
 
-export function getModel() {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error("A chave GEMINI_API_KEY não está configurada.");
-  }
-  const genAI = new GoogleGenerativeAI(apiKey);
-  return genAI.getGenerativeModel({
-    model: MODEL_NAME,
-    generationConfig: { responseMimeType: "application/json" },
-  });
+// ---------------------------------------------------------------------------
+// Schema de extração (JSON mode nativo do Gemini) — equivalente ao Tool Use
+// da Anthropic. Campos ausentes no texto = simplesmente não incluídos pelo
+// modelo (nullable), nunca um valor inventado.
+// ---------------------------------------------------------------------------
+
+const TRIAGEM_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    numero_processo: { type: Type.STRING, nullable: true },
+    vara: { type: Type.STRING, nullable: true },
+    autor: { type: Type.STRING, nullable: true },
+    reu: { type: Type.STRING, nullable: true },
+    dib: { type: Type.STRING, nullable: true, description: "Formato DD/MM/AAAA" },
+    der: { type: Type.STRING, nullable: true, description: "Formato DD/MM/AAAA" },
+    rmi: { type: Type.NUMBER, nullable: true },
+    indice_determinado_pelo_juiz: { type: Type.STRING, nullable: true },
+    data_citacao: { type: Type.STRING, nullable: true, description: "Formato DD/MM/AAAA" },
+    sistema_amortizacao: {
+      type: Type.STRING,
+      nullable: true,
+      enum: ["PRICE", "SAC", "NAO_IDENTIFICADO"],
+    },
+    taxa_juros_contratada_am: { type: Type.NUMBER, nullable: true },
+    observacoes_para_conferencia_humana: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+    },
+    quesitos: {
+      type: Type.OBJECT,
+      properties: {
+        autor: { type: Type.ARRAY, items: { type: Type.STRING } },
+        juiz: { type: Type.ARRAY, items: { type: Type.STRING } },
+        reu: { type: Type.ARRAY, items: { type: Type.STRING } },
+      },
+    },
+  },
+} as unknown as import("@google/genai").Schema;
+
+function buildSystemInstruction(): string {
+  return `
+Você é um assistente pericial especializado em triagem de processos judiciais brasileiros.
+Extraia estritamente os dados literalmente presentes no texto, no formato JSON solicitado.
+
+Regras inegociáveis:
+- Extraia apenas o que está literalmente no texto. Nunca estime, nunca infira.
+- Se um dado não estiver no texto, retorne null para o campo (nunca invente).
+- Datas no formato DD/MM/AAAA, exatamente como aparecem no texto.
+- Quesitos transcritos fielmente, sem parafrasear o mérito.
+- Preencha "observacoes_para_conferencia_humana" sempre que houver ambiguidade.
+- O texto pode conter marcadores [[FLS. N]] indicando o início de cada folha — eles NÃO
+  são conteúdo do processo, nunca os copie para nenhum campo.
+`.trim();
+}
+
+function normalizarResultado(input: any): ProcessoTriagemExtraido {
+  return {
+    numero_processo: input?.numero_processo ?? null,
+    vara: input?.vara ?? null,
+    autor: input?.autor ?? null,
+    reu: input?.reu ?? null,
+    dib: input?.dib ?? null,
+    der: input?.der ?? null,
+    rmi: input?.rmi ?? null,
+    indice_determinado_pelo_juiz: input?.indice_determinado_pelo_juiz ?? null,
+    data_citacao: input?.data_citacao ?? null,
+    sistema_amortizacao: input?.sistema_amortizacao ?? null,
+    taxa_juros_contratada_am: input?.taxa_juros_contratada_am ?? null,
+    observacoes_para_conferencia_humana: input?.observacoes_para_conferencia_humana ?? [],
+    quesitos: {
+      autor: input?.quesitos?.autor ?? [],
+      juiz: input?.quesitos?.juiz ?? [],
+      reu: input?.quesitos?.reu ?? [],
+    },
+  };
 }
 
 function dividirEmBlocos(texto: string): string[] {
@@ -111,77 +186,6 @@ function dividirEmBlocos(texto: string): string[] {
   return blocos;
 }
 
-function buildPromptTriagem(texto: string, blocoInfo?: { indice: number; total: number }): string {
-  const contextoBloco = blocoInfo
-    ? `\nEste é o BLOCO ${blocoInfo.indice} de ${blocoInfo.total} de um processo extenso. Se um campo não aparecer neste trecho, retorne null para ele.\n`
-    : "";
-
-  return `
-  Você é um assistente pericial especializado em triagem de processos judiciais.
-  ${contextoBloco}
-  Análise o texto do processo abaixo e extraia estritamente os seguintes dados no formato JSON:
-
-  {
-    "numero_processo": "string ou null",
-    "vara": "string ou null",
-    "autor": "string ou null",
-    "reu": "string ou null",
-    "dib": "string (DD/MM/AAAA) ou null",
-    "der": "string (DD/MM/AAAA) ou null",
-    "rmi": "number ou null",
-    "indice_determinado_pelo_juiz": "string ou null",
-    "data_citacao": "string (DD/MM/AAAA) ou null",
-    "sistema_amortizacao": "string ou null",
-    "taxa_juros_contratada_am": "number ou null",
-    "observacoes_para_conferencia_humana": ["string"],
-    "quesitos": {
-      "autor": ["string"],
-      "juiz": ["string"],
-      "reu": ["string"]
-    }
-  }
-
-  Regra: extraia apenas o que está literalmente no texto. Campo ausente = null. Nunca estime.
-  Importante: o texto contém marcadores no formato [[FLS. N]] indicando o início de cada folha do processo. Nunca os copie para nenhum campo do JSON.
-
-  Texto do processo:
-  ${texto}
-  `;
-}
-
-function normalizarResultado(jsonParsed: any): ProcessoTriagemExtraido {
-  return {
-    numero_processo: jsonParsed.numero_processo ?? null,
-    vara: jsonParsed.vara ?? null,
-    autor: jsonParsed.autor ?? null,
-    reu: jsonParsed.reu ?? null,
-    dib: jsonParsed.dib ?? null,
-    der: jsonParsed.der ?? null,
-    rmi: jsonParsed.rmi ?? null,
-    indice_determinado_pelo_juiz: jsonParsed.indice_determinado_pelo_juiz ?? null,
-    observacoes_para_conferencia_humana: jsonParsed.observacoes_para_conferencia_humana ?? [],
-    data_citacao: jsonParsed.data_citacao ?? null,
-    sistema_amortizacao: jsonParsed.sistema_amortizacao ?? null,
-    taxa_juros_contratada_am: jsonParsed.taxa_juros_contratada_am ?? null,
-    quesitos: jsonParsed.quesitos ?? { autor: [], juiz: [], reu: [] },
-  };
-}
-
-async function extrairBloco(
-  texto: string,
-  blocoInfo?: { indice: number; total: number }
-): Promise<ProcessoTriagemExtraido> {
-  const model = getModel();
-  const contexto = blocoInfo ? `bloco ${blocoInfo.indice}/${blocoInfo.total}` : "documento único";
-
-  const resultado = await comRetry(async () => {
-    const result = await model.generateContent(buildPromptTriagem(texto, blocoInfo));
-    return result.response.text();
-  }, contexto);
-
-  return normalizarResultado(JSON.parse(resultado));
-}
-
 function mesclarParciais(parciais: ProcessoTriagemExtraido[]): ProcessoTriagemExtraido {
   const primeiroNaoNulo = <T,>(vals: (T | null)[]): T | null =>
     vals.find((v) => v !== null && v !== undefined) ?? null;
@@ -198,9 +202,7 @@ function mesclarParciais(parciais: ProcessoTriagemExtraido[]): ProcessoTriagemEx
     data_citacao: primeiroNaoNulo(parciais.map((p) => p.data_citacao)),
     sistema_amortizacao: primeiroNaoNulo(parciais.map((p) => p.sistema_amortizacao)),
     taxa_juros_contratada_am: primeiroNaoNulo(parciais.map((p) => p.taxa_juros_contratada_am)),
-    observacoes_para_conferencia_humana: parciais.flatMap(
-      (p) => p.observacoes_para_conferencia_humana ?? []
-    ),
+    observacoes_para_conferencia_humana: parciais.flatMap((p) => p.observacoes_para_conferencia_humana ?? []),
     quesitos: {
       autor: parciais.flatMap((p) => p.quesitos?.autor ?? []),
       juiz: parciais.flatMap((p) => p.quesitos?.juiz ?? []),
@@ -209,13 +211,47 @@ function mesclarParciais(parciais: ProcessoTriagemExtraido[]): ProcessoTriagemEx
   };
 }
 
+async function extrairBloco(
+  texto: string,
+  blocoInfo?: { indice: number; total: number }
+): Promise<ProcessoTriagemExtraido> {
+  const client = getGeminiClient();
+  const contexto = blocoInfo ? `bloco ${blocoInfo.indice}/${blocoInfo.total}` : "documento único";
+
+  const prefixoBloco = blocoInfo
+    ? `Bloco ${blocoInfo.indice}/${blocoInfo.total} de um processo extenso (trecho, não o documento ` +
+      `inteiro). Campo ausente aqui = null (pode estar em outro bloco).\n\n`
+    : "";
+
+  const response = await comRetry(
+    () =>
+      client.models.generateContent({
+        model: MODEL_EXTRACAO,
+        contents: [{ role: "user", parts: [{ text: `${prefixoBloco}Texto do processo:\n${texto}` }] }],
+        config: {
+          systemInstruction: buildSystemInstruction(),
+          responseMimeType: "application/json",
+          responseSchema: TRIAGEM_SCHEMA,
+          temperature: 0,
+        },
+      }),
+    contexto
+  );
+
+  return normalizarResultado(JSON.parse(response.text ?? "{}"));
+}
+
+/**
+ * Processa o texto completo do processo. Caminho rápido (uma chamada) para
+ * a maioria dos casos; fatiamento com pausa respeitando o RPM real do free
+ * tier para os poucos casos que excedem o orçamento de uma única chamada.
+ */
 export async function processarTextoProcesso(
   texto: string,
   caseId?: string,
   onProgress?: (info: ProgressoProcessamento) => void
 ): Promise<ProcessoTriagemExtraido> {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GEMINI_API_KEY;
-  if (!apiKey) {
+  if (!process.env.GEMINI_API_KEY) {
     throw new Error("A chave GEMINI_API_KEY não está configurada.");
   }
 
@@ -223,7 +259,7 @@ export async function processarTextoProcesso(
   const totalBlocos = blocos.length;
 
   if (totalBlocos === 1) {
-    onProgress?.({ progresso: 50, etapa: "Analisando o processo com o Gemini...", total_blocos: 1, blocos_concluidos: 0 });
+    onProgress?.({ progresso: 50, etapa: "Analisando o processo com o Gemini (gratuito)...", total_blocos: 1, blocos_concluidos: 0 });
     const resultado = await extrairBloco(blocos[0]);
     onProgress?.({ progresso: 100, etapa: "Concluído.", total_blocos: 1, blocos_concluidos: 1, status: "done" });
     return resultado;
@@ -237,12 +273,14 @@ export async function processarTextoProcesso(
       etapa: `Analisando bloco ${i + 1} de ${totalBlocos}...`,
       total_blocos: totalBlocos,
       blocos_concluidos: i,
-      estimativa_segundos: (totalBlocos - i) * SEGUNDOS_ESTIMADOS_POR_BLOCO_FALLBACK,
+      estimativa_segundos: Math.ceil(((totalBlocos - i) * DELAY_ENTRE_BLOCOS_MS) / 1000),
     });
 
     const parcial = await extrairBloco(blocos[i], { indice: i + 1, total: totalBlocos });
     parciais.push(parcial);
 
+    // Respeita o RPM real do free tier antes do próximo bloco — não um
+    // número arbitrário, é 60000/RPM com 20% de margem.
     if (i < blocos.length - 1) await delay(DELAY_ENTRE_BLOCOS_MS);
   }
 
@@ -258,9 +296,12 @@ export async function processarTextoProcesso(
   };
 }
 
+// Stub — extração de extrato bancário ainda não implementada (era stub nas
+// versões anteriores também). A rota extract-extrato tem uma inconsistência
+// pré-existente (espera documentId, cliente envia texto) fora deste escopo.
 export async function extractExtratoBancario(
-  fileBase64OrText: string,
-  mimeType?: string
+  _fileBase64OrText: string,
+  _mimeType?: string
 ): Promise<{
   banco?: string;
   conta?: string;
