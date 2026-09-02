@@ -100,4 +100,6 @@ export interface TokenPreviewInfo {
   percentualOcupado?: number;
   status?: TokenWindowStatus;
   exigeChunking?: boolean;
+  totalPaginas?: number;
+  estimado?: boolean;
 }
