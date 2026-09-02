@@ -96,8 +96,4 @@ export interface TokenPreviewInfo {
   estimativaSegundos?: number;
 }
 
-export interface TokenWindowStatus {
-  dentroDoLimite?: boolean;
-  porcentagemUso?: number;
-  limiteMaximo?: number;
-}
+export type TokenWindowStatus = "ok" | "atencao" | "critico";
