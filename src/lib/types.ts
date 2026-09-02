@@ -91,6 +91,7 @@ export interface ChunkingBlockInfo {
   paginaFinal?: number;
   texto?: string;
   tokens?: number;
+  tokensEstimados?: number;
   status?: string;
 }
 
